@@ -20,6 +20,7 @@ use crate::files;
 use crate::list;
 use crate::page::Page;
 use crate::palette::Palette;
+use crate::settings::Settings;
 use crate::signin::{Outcome, SignIn};
 use crate::system::Clock;
 
@@ -64,6 +65,7 @@ struct Fetching {
 
 struct Reading {
     conversation: String,
+    account: String,
     message: Message,
     images: bool,
     shown: Shown,
@@ -122,7 +124,9 @@ pub struct App {
     failure: Option<(String, String)>,
     pane: Pane,
     scope: Scope,
-    accounts_open: bool,
+    settings: Settings,
+    settings_open: bool,
+    auto_opened: Option<String>,
     adding_account: bool,
     sign_in: SignIn,
     marked: Option<(String, usize)>,
@@ -144,7 +148,9 @@ impl App {
             failure: None,
             pane: Pane::Conversation,
             scope: Scope::AllInboxes,
-            accounts_open: false,
+            settings: Settings::load(),
+            settings_open: false,
+            auto_opened: None,
             adding_account: false,
             sign_in: SignIn::default(),
             marked: None,
@@ -157,7 +163,7 @@ impl App {
     pub fn open_for_screenshot(&mut self, opening: &str) {
         match opening {
             "new" => self.start_new(),
-            "accounts" => self.accounts_open = true,
+            "settings" => self.settings_open = true,
             title => {
                 self.selected = self
                     .source
@@ -285,8 +291,8 @@ impl App {
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(10.0);
-                        if ui.button("⚙").on_hover_text("Accounts").clicked() {
-                            self.accounts_open = true;
+                        if ui.button("⚙").on_hover_text("Settings").clicked() {
+                            self.settings_open = true;
                         }
                         if ui
                             .button("✏")
@@ -562,6 +568,19 @@ impl App {
         {
             self.reading = None;
         }
+        if self.auto_opened.as_ref() != Some(&conversation.key) {
+            self.auto_opened = Some(conversation.key.clone());
+            if self.settings.open_html
+                && self.reading.is_none()
+                && let Some(message) = conversation
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.html)
+            {
+                self.open_reading(&conversation, message.clone(), self.settings.load_images);
+            }
+        }
         if self.reading.is_some() {
             egui::CentralPanel::default()
                 .frame(Frame::new().fill(palette.canvas))
@@ -582,38 +601,29 @@ impl App {
                     .auto_shrink(false)
                     .show(ui, |ui| {
                         ui.add_space(8.0);
-                        bubbles::show(ui, &conversation, me, dates::today(), self.clock, &palette)
+                        bubbles::show(
+                            ui,
+                            &conversation,
+                            me,
+                            dates::today(),
+                            self.clock,
+                            &palette,
+                            self.settings.load_images,
+                        )
                     })
                     .inner;
                 if let Some(Action { message, choice }) = action {
-                    let mail = self.source.mail();
-                    let account = conversation.account.as_str();
-                    let name =
-                        |index: usize| message.attachments.get(index).cloned().unwrap_or_default();
-                    let work = match choice {
+                    match choice {
                         Choice::Email { images } => {
-                            self.reading = Some(Reading {
-                                conversation: conversation.key.clone(),
-                                shown: Shown::Loading(mail.email(account, &message)),
-                                message,
-                                images,
-                            });
-                            return;
+                            self.open_reading(&conversation, message, images)
                         }
-                        Choice::Open(index) => Work::Open {
-                            name: name(index),
-                            reply: mail.attachment(account, &message, index),
-                        },
-                        Choice::Save(index) => Work::Save {
-                            name: name(index),
-                            reply: mail.attachment(account, &message, index),
-                        },
-                    };
-                    self.failure = None;
-                    self.fetching = Some(Fetching {
-                        conversation: conversation.key.clone(),
-                        work,
-                    });
+                        choice => self.attachment(
+                            &conversation.key,
+                            &conversation.account,
+                            &message,
+                            choice,
+                        ),
+                    }
                 }
             });
     }
@@ -636,49 +646,47 @@ impl App {
         }
         let mut close = false;
         let mut toggle = false;
+        let mut choice = None;
         Frame::new()
-            .inner_margin(Margin::symmetric(12, 8))
+            .inner_margin(Margin::symmetric(16, 8))
             .show(ui, |ui| {
+                let control = |text: &str| {
+                    egui::Button::new(RichText::new(text).size(13.0).color(palette.accent))
+                        .frame(false)
+                };
                 ui.horizontal(|ui| {
                     if ui
-                        .button("‹ Conversation")
+                        .add(control("☰ Chat View"))
                         .on_hover_text("Back to the conversation (Esc)")
                         .clicked()
                     {
                         close = true;
                     }
-                    let sender = reading
-                        .message
-                        .from
-                        .as_ref()
-                        .map_or("Unknown sender", |from| from.display());
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!(
-                                "{sender}, {}",
-                                dates::day(reading.message.date, dates::today())
-                            ))
-                            .size(12.5)
-                            .color(palette.secondary),
-                        )
-                        .truncate(),
-                    );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let label = if reading.images {
-                            "Hide Images"
+                        let (label, hint) = if reading.images {
+                            ("👁 Hide Images", "Stop loading pictures from the sender's servers")
                         } else {
-                            "Show Images"
+                            (
+                                "👁 Show Images",
+                                "Load pictures from the sender's servers, which can tell the sender you opened this",
+                            )
                         };
-                        let hint = if reading.images {
-                            "Stop loading pictures from the sender's servers"
-                        } else {
-                            "Load pictures from the sender's servers, which can tell the sender you opened this"
-                        };
-                        if ui.button(label).on_hover_text(hint).clicked() {
+                        if ui.add(control(label)).on_hover_text(hint).clicked() {
                             toggle = true;
                         }
                     });
                 });
+                if !reading.message.attachments.is_empty() {
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        for (index, name) in reading.message.attachments.iter().enumerate() {
+                            let chip = ui.add(bubbles::attachment_button(name, palette.text));
+                            if let Some(chosen) = bubbles::attachment_choice(&chip, index) {
+                                choice = Some(chosen);
+                            }
+                        }
+                    });
+                }
             });
         ui.separator();
         match &mut reading.shown {
@@ -715,9 +723,46 @@ impl App {
                 *page = Page::new(html.clone(), reading.images);
             }
         }
+        if let Some(choice) = choice {
+            let message = reading.message.clone();
+            let account = reading.account.clone();
+            let conversation = reading.conversation.clone();
+            self.attachment(&conversation, &account, &message, choice);
+        }
         if close {
             self.reading = None;
         }
+    }
+
+    fn open_reading(&mut self, conversation: &Conversation, message: Message, images: bool) {
+        self.reading = Some(Reading {
+            conversation: conversation.key.clone(),
+            account: conversation.account.clone(),
+            shown: Shown::Loading(self.source.mail().email(&conversation.account, &message)),
+            message,
+            images,
+        });
+    }
+
+    fn attachment(&mut self, conversation: &str, account: &str, message: &Message, choice: Choice) {
+        let mail = self.source.mail();
+        let name = |index: usize| message.attachments.get(index).cloned().unwrap_or_default();
+        let work = match choice {
+            Choice::Email { .. } => return,
+            Choice::Open(index) => Work::Open {
+                name: name(index),
+                reply: mail.attachment(account, message, index),
+            },
+            Choice::Save(index) => Work::Save {
+                name: name(index),
+                reply: mail.attachment(account, message, index),
+            },
+        };
+        self.failure = None;
+        self.fetching = Some(Fetching {
+            conversation: conversation.to_string(),
+            work,
+        });
     }
 
     fn composer(&mut self, ui: &mut Ui, conversation: &Conversation, account: Option<&Account>) {
@@ -934,20 +979,32 @@ impl App {
         }
     }
 
-    fn accounts_window(&mut self, ctx: &egui::Context) {
-        if !self.accounts_open {
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
             return;
         }
         let palette = self.palette;
         let mut open = true;
         let mut sign_out = None;
-        egui::Window::new("Accounts")
+        let mut settings = self.settings;
+        egui::Window::new("Settings")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_width(460.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
+                ui.label(RichText::new("Reading").strong().color(palette.text));
+                ui.checkbox(&mut settings.open_html, "Open HTML email in Email View");
+                ui.checkbox(&mut settings.load_images, "Load remote images");
+                ui.label(
+                    RichText::new("Zirbe shows the plain-text version as a chat bubble by default. Email View shows the message as the sender laid it out. Loading remote images can let a sender know you opened the message and roughly where you are, so it stays off unless you turn it on.")
+                        .size(11.0)
+                        .color(palette.secondary),
+                );
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(RichText::new("Accounts").strong().color(palette.text));
                 for account in self.source.mail().accounts() {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
@@ -992,7 +1049,11 @@ impl App {
             }
             store.sign_out(&account);
         }
-        self.accounts_open = open;
+        if settings != self.settings {
+            self.settings = settings;
+            settings.save();
+        }
+        self.settings_open = open;
     }
 
     fn welcome(&mut self, ui: &mut Ui) {
@@ -1050,6 +1111,6 @@ impl eframe::App for App {
             Pane::Conversation => self.conversation_pane(ui, &conversations),
             Pane::New(_) => self.new_pane(ui),
         }
-        self.accounts_window(&ctx);
+        self.settings_window(&ctx);
     }
 }

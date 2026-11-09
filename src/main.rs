@@ -15,6 +15,7 @@ mod palette;
 mod paths;
 #[cfg(feature = "screenshot")]
 mod screenshot;
+mod settings;
 mod signin;
 mod system;
 

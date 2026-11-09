@@ -50,7 +50,7 @@ platform's SDK headers; check those arms on the Mac and on winwork.
 The `screenshot` feature lets a build photograph its own window:
 `ZIRBE_SCREENSHOT=<png>` saves one after `ZIRBE_SCREENSHOT_DELAY` seconds and
 closes, `ZIRBE_SCREENSHOT_SIZE=<w>x<h>` sizes the window, and
-`ZIRBE_SCREENSHOT_OPEN` opens a conversation by title, `new` or `accounts`
+`ZIRBE_SCREENSHOT_OPEN` opens a conversation by title, `new` or `settings`
 first. The `sync` example signs in, syncs, prints the conversations and signs
 out again in a scratch profile. Point `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` at a scratch directory to
 run against a live account without touching the real profile.
