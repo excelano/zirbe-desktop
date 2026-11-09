@@ -9,7 +9,8 @@ use eframe::egui::{
     self, Align, Frame, Key, Layout, Margin, Modifiers, RichText, ScrollArea, TextEdit, Ui,
 };
 use zirbe_store::{
-    Account, Conversation, Draft, FolderInfo, INBOX, MailSource, Reply, Role, Scope, Status, Store,
+    Account, Conversation, Draft, FolderInfo, INBOX, MailSource, Message, Reply, Role, Scope,
+    Status, Store,
 };
 
 use crate::bubbles::{self, Action, Choice};
@@ -17,10 +18,10 @@ use crate::dates;
 use crate::demo::Demo;
 use crate::files;
 use crate::list;
+use crate::page::Page;
 use crate::palette::Palette;
 use crate::signin::{Outcome, SignIn};
 use crate::system::Clock;
-use crate::viewer;
 
 pub enum Source {
     Live(Store),
@@ -61,30 +62,28 @@ struct Fetching {
     work: Work,
 }
 
+struct Reading {
+    conversation: String,
+    message: Message,
+    images: bool,
+    shown: Shown,
+}
+
+enum Shown {
+    Loading(Reply<String>),
+    Ready { html: String, page: Page },
+    Failed(String),
+}
+
 enum Work {
-    Email {
-        title: String,
-        images: bool,
-        reply: Reply<String>,
-    },
-    Open {
-        name: String,
-        reply: Reply<Vec<u8>>,
-    },
-    Save {
-        name: String,
-        reply: Reply<Vec<u8>>,
-    },
-    Saving {
-        name: String,
-        reply: Reply,
-    },
+    Open { name: String, reply: Reply<Vec<u8>> },
+    Save { name: String, reply: Reply<Vec<u8>> },
+    Saving { name: String, reply: Reply },
 }
 
 impl Work {
     fn doing(&self) -> String {
         match self {
-            Work::Email { .. } => "Opening the email…".into(),
             Work::Open { name, .. } | Work::Save { name, .. } => format!("Downloading {name}…"),
             Work::Saving { name, .. } => format!("Saving {name}…"),
         }
@@ -92,7 +91,6 @@ impl Work {
 
     fn failed(&self, error: &str) -> String {
         match self {
-            Work::Email { .. } => format!("The email did not open: {error}"),
             Work::Open { name, .. } => format!("{name} did not open: {error}"),
             Work::Save { name, .. } | Work::Saving { name, .. } => {
                 format!("{name} was not saved: {error}")
@@ -120,6 +118,7 @@ pub struct App {
     drafts: HashMap<String, String>,
     sending: Option<Sending>,
     fetching: Option<Fetching>,
+    reading: Option<Reading>,
     failure: Option<(String, String)>,
     pane: Pane,
     scope: Scope,
@@ -141,6 +140,7 @@ impl App {
             drafts: HashMap::new(),
             sending: None,
             fetching: None,
+            reading: None,
             failure: None,
             pane: Pane::Conversation,
             scope: Scope::AllInboxes,
@@ -204,6 +204,11 @@ impl App {
         {
             self.pane = Pane::Conversation;
         }
+        if self.reading.is_some()
+            && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.reading = None;
+        }
     }
 
     fn poll_sending(&mut self, ctx: &egui::Context) {
@@ -228,15 +233,6 @@ impl App {
         };
         let failed = |error: String| work.failed(&error);
         let next = match &work {
-            Work::Email {
-                title,
-                images,
-                reply,
-            } => arrived(reply, ctx).map(|result| {
-                result
-                    .and_then(|html| viewer::open(title, html, *images))
-                    .map(|()| None)
-            }),
             Work::Open { name, reply } => arrived(reply, ctx).map(|result| {
                 result
                     .and_then(|bytes| files::open(name, &bytes))
@@ -559,6 +555,19 @@ impl App {
                     .inner_margin(Margin::symmetric(16, 10)),
             )
             .show(ui, |ui| self.composer(ui, &conversation, account.as_ref()));
+        if self
+            .reading
+            .as_ref()
+            .is_some_and(|reading| reading.conversation != conversation.key)
+        {
+            self.reading = None;
+        }
+        if self.reading.is_some() {
+            egui::CentralPanel::default()
+                .frame(Frame::new().fill(palette.canvas))
+                .show(ui, |ui| self.reading_view(ui));
+            return;
+        }
         egui::CentralPanel::default()
             .frame(Frame::new().fill(palette.canvas))
             .show(ui, |ui| {
@@ -582,11 +591,15 @@ impl App {
                     let name =
                         |index: usize| message.attachments.get(index).cloned().unwrap_or_default();
                     let work = match choice {
-                        Choice::Email { images } => Work::Email {
-                            title: list::title(&conversation).to_string(),
-                            images,
-                            reply: mail.email(account, &message),
-                        },
+                        Choice::Email { images } => {
+                            self.reading = Some(Reading {
+                                conversation: conversation.key.clone(),
+                                shown: Shown::Loading(mail.email(account, &message)),
+                                message,
+                                images,
+                            });
+                            return;
+                        }
                         Choice::Open(index) => Work::Open {
                             name: name(index),
                             reply: mail.attachment(account, &message, index),
@@ -603,6 +616,108 @@ impl App {
                     });
                 }
             });
+    }
+
+    fn reading_view(&mut self, ui: &mut Ui) {
+        let palette = self.palette;
+        let Some(reading) = &mut self.reading else {
+            return;
+        };
+        if let Shown::Loading(reply) = &reading.shown
+            && let Some(result) = arrived(reply, ui.ctx())
+        {
+            reading.shown = match result {
+                Ok(html) => Shown::Ready {
+                    page: Page::new(html.clone(), reading.images),
+                    html,
+                },
+                Err(error) => Shown::Failed(error),
+            };
+        }
+        let mut close = false;
+        let mut toggle = false;
+        Frame::new()
+            .inner_margin(Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("‹ Conversation")
+                        .on_hover_text("Back to the conversation (Esc)")
+                        .clicked()
+                    {
+                        close = true;
+                    }
+                    let sender = reading
+                        .message
+                        .from
+                        .as_ref()
+                        .map_or("Unknown sender", |from| from.display());
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!(
+                                "{sender}, {}",
+                                dates::day(reading.message.date, dates::today())
+                            ))
+                            .size(12.5)
+                            .color(palette.secondary),
+                        )
+                        .truncate(),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let label = if reading.images {
+                            "Hide Images"
+                        } else {
+                            "Show Images"
+                        };
+                        let hint = if reading.images {
+                            "Stop loading pictures from the sender's servers"
+                        } else {
+                            "Load pictures from the sender's servers, which can tell the sender you opened this"
+                        };
+                        if ui.button(label).on_hover_text(hint).clicked() {
+                            toggle = true;
+                        }
+                    });
+                });
+            });
+        ui.separator();
+        match &mut reading.shown {
+            Shown::Loading(_) => {
+                ui.add_space(24.0);
+                ui.vertical_centered(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("Downloading the email…")
+                            .size(12.0)
+                            .color(palette.secondary),
+                    );
+                });
+            }
+            Shown::Failed(error) => {
+                ui.add_space(24.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new(format!("The email did not open: {error}"))
+                            .color(palette.failure),
+                    );
+                });
+            }
+            Shown::Ready { page, .. } => {
+                ScrollArea::vertical()
+                    .id_salt(("email", &reading.conversation, reading.message.uid))
+                    .auto_shrink(false)
+                    .show(ui, |ui| page.show(ui));
+            }
+        }
+        if toggle {
+            reading.images = !reading.images;
+            if let Shown::Ready { html, page } = &mut reading.shown {
+                *page = Page::new(html.clone(), reading.images);
+            }
+        }
+        if close {
+            self.reading = None;
+        }
     }
 
     fn composer(&mut self, ui: &mut Ui, conversation: &Conversation, account: Option<&Account>) {

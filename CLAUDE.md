@@ -23,18 +23,17 @@ another folder is fetched only while it is the one open, and stays cached
 after. The app crate is the window: `app.rs` lays it out, `list.rs` draws the
 conversation rows, `bubbles.rs` the messages and their attachment chips,
 `files.rs` opening and saving attachments, `signin.rs` the account form,
-`demo.rs` the sample conversations behind `--demo`, and `viewer.rs` the Email
-View, a wry web view that the same binary runs as a separate process
-(`zirbe --email-view [--images] <title>`, the HTML on stdin) because the egui
-window owns the event loop.
+`demo.rs` the sample conversations behind `--demo`, and `page.rs` the Email
+View: Blitz (`blitz-html`, pinned to an exact beta) lays out and paints a
+message's HTML on its own thread into tiles the reading pane draws, and its
+`NetProvider` is the only way the page reaches anything outside the message.
 
 ## Platforms
 
 Linux is the only platform built and shipped. Code that differs by platform sits
 behind `cfg(target_os)` so the macOS and Windows lanes can be added without
 restructuring: the keyring store in `store/src/secrets.rs`, the desktop settings
-read over the XDG portal in `src/system.rs`, the web view's window, engine
-settings and page address in `src/viewer.rs`, the empty window icon on macOS in
+read over the XDG portal in `src/system.rs`, the empty window icon on macOS in
 `src/main.rs`, and the Windows manifest that `build.rs` embeds. Paths come from
 `dirs`. `ring` compiles C, so a cross-target `cargo check` from Linux needs that
 platform's SDK headers; check those arms on the Mac and on winwork.
@@ -59,9 +58,10 @@ run against a live account without touching the real profile.
 ## Rules
 
 Messages are shown as text. HTML is rendered only in Email View, which the user
-opens per message, under the Content Security Policy in `src/viewer.rs`: nothing
-leaves the machine unless the user chose Show Images, and then only images.
-Script stays off in both cases. Plain IMAP or SMTP without TLS is never offered. Server discovery is
+opens per message, and Blitz runs no script. The page's `NetProvider` in
+`src/page.rs` answers images embedded in the message and nothing else, unless
+the user chose Show Images; then it fetches the message's `<img>` sources and
+nothing more, and keeps a response only if it is an image. Plain IMAP or SMTP without TLS is never offered. Server discovery is
 the offline table in `store/src/presets.rs`, never a network lookup, because
 autoconfig and SRV lookups leak the address to a third party. Don't commit,
 push or publish unless David asks.

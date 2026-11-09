@@ -25,12 +25,22 @@ serde_json = "1"
 dirs = "7"
 open = "5"
 png = { version = "0.18", optional = true }
-tao = "0.37"
-wry = "0.57"
 rfd = "0.18"
+blitz-html = "=0.3.0-beta.4"
+blitz-dom = { version = "=0.3.0-beta.4", features = ["floats"] }
+blitz-paint = "=0.3.0-beta.4"
+blitz-traits = "=0.3.0-beta.4"
+anyrender = "0.14"
+anyrender_vello_cpu = "0.18"
+ureq = "3"
+base64 = "0.23"
+# Blitz decodes pictures through image, which it builds with no formats.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# Blitz's fontique must open fontconfig at run time, as eframe's does.
+fontique = { version = "0.12", features = ["fontconfig-dlopen"] }
+url = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
 zbus = "5"
 
 [features]

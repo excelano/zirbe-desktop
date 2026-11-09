@@ -26,15 +26,16 @@ update check and no account of its own.
 Mail arrives from other people and is the input this application has to
 withstand. Messages are parsed by the `mail-parser` crate and shown as plain
 text, with HTML turned into text by `html2text`. A message's HTML is rendered
-only when the user asks for Email View, in a separate process running the
-system web view (WebKitGTK on Linux) under a Content Security Policy that allows
-inline styles and images embedded in the message and nothing else: no script,
-frame, stylesheet, font or request to any server. Script markup is also turned
-off in the engine itself. Show Images relaxes the policy for images alone, which
-lets the sender's servers see the request. Links open in the system browser and
-never in that window. A crash or hang on a malformed or hostile message, or
-anything in Email View that reaches the network or runs script, is worth
-reporting.
+only when the user asks for Email View, by Blitz, an HTML and CSS engine built
+into Zirbe that has no script engine. Blitz fetches nothing itself: every
+resource a page asks for goes through Zirbe's own provider, which answers only
+the images embedded in the message and gives everything else an empty answer.
+Show Images lets that provider fetch the message's `<img>` sources over HTTPS or
+HTTP, which lets the sender's servers see the request; it still requests no
+stylesheet, font, frame or background image, and uses a response only if it is
+an image. Links open in the system browser. A crash or hang on a malformed or
+hostile message, or anything in Email View that reaches the network beyond
+those images, is worth reporting.
 
 ## What it stores
 
