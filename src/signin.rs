@@ -124,16 +124,14 @@ impl SignIn {
         };
         egui::CollapsingHeader::new(label).show(ui, |ui| {
             egui::Grid::new("servers")
-                .num_columns(3)
+                .num_columns(2)
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("Incoming (IMAP)");
-                    ui.add(TextEdit::singleline(&mut self.imap_host).desired_width(200.0));
-                    ui.add(TextEdit::singleline(&mut self.imap_port).desired_width(48.0));
+                    server(ui, &mut self.imap_host, &mut self.imap_port);
                     ui.end_row();
                     ui.label("Outgoing (SMTP)");
-                    ui.add(TextEdit::singleline(&mut self.smtp_host).desired_width(200.0));
-                    ui.add(TextEdit::singleline(&mut self.smtp_port).desired_width(48.0));
+                    server(ui, &mut self.smtp_host, &mut self.smtp_port);
                     ui.end_row();
                 });
         });
@@ -166,4 +164,11 @@ impl SignIn {
         });
         Outcome::Waiting
     }
+}
+
+fn server(ui: &mut Ui, host: &mut String, port: &mut String) {
+    ui.horizontal(|ui| {
+        ui.add(TextEdit::singleline(host).desired_width(190.0));
+        ui.add(TextEdit::singleline(port).desired_width(48.0));
+    });
 }
