@@ -214,7 +214,7 @@ impl Connection {
                 folder,
                 mailbox,
                 batch,
-                "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER] BODY.PEEK[1.MIME] BODY.PEEK[1])",
+                "(UID FLAGS INTERNALDATE BODYSTRUCTURE BODY.PEEK[HEADER] BODY.PEEK[1.MIME] BODY.PEEK[1])",
             )
             .await?;
         }
@@ -265,6 +265,10 @@ impl Connection {
                         body: Body::FirstPart {
                             mime: fetch.section(&mime_path),
                             data: fetch.section(&part_path).unwrap_or_default(),
+                            attachments: fetch
+                                .bodystructure()
+                                .map(mime::attachment_names)
+                                .unwrap_or_default(),
                         },
                         arrived,
                     })

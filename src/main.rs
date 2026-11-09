@@ -8,6 +8,7 @@ mod app;
 mod bubbles;
 mod dates;
 mod demo;
+mod files;
 mod list;
 mod palette;
 mod paths;
@@ -54,6 +55,7 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    files::clear();
     let demo = arguments.iter().any(|argument| argument == "--demo");
     let dark = system::dark().unwrap_or(false);
     let palette = if dark { palette::DARK } else { palette::LIGHT };

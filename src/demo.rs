@@ -297,6 +297,15 @@ impl MailSource for Demo {
 
     fn refresh(&self) {}
 
+    fn attachment(&self, _account: &str, message: &Message, index: usize) -> Reply<Vec<u8>> {
+        let name = message.attachments.get(index).cloned().unwrap_or_default();
+        let (reply, receiver) = mpsc::channel();
+        let _ = reply.send(Ok(
+            format!("A sample attachment named {name}.\n").into_bytes()
+        ));
+        receiver
+    }
+
     fn email(&self, _account: &str, message: &Message) -> Reply<String> {
         let sender = message.from.as_ref().map_or("", |from| from.display());
         let paragraphs: String = message

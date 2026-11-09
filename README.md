@@ -62,7 +62,10 @@ which downloads that message again from your server and shows its full HTML in a
 separate window with scripts off and nothing loaded from the network; pictures
 the sender embedded in the message still show. Show Images opens the same view
 with the sender's linked images loaded, which can tell the sender you opened the
-message and roughly where you are. Links open in your browser. Apart from those
+message and roughly where you are. Links open in your browser. An attachment
+is downloaded from your server when you open or save it; one you open is
+written to a private folder under `$XDG_RUNTIME_DIR/zirbe`, which Zirbe empties
+each time it starts and the system clears at logout. Apart from those
 images, the only connections are to your own IMAP and SMTP servers.
 
 ## License

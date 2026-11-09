@@ -25,12 +25,30 @@ pub(crate) fn has_html(message: &mail_parser::Message<'_>) -> bool {
         .any(|part| part.is_content_type("text", "html"))
 }
 
+fn listed(part: &MessagePart<'_>) -> bool {
+    !part.is_inline() || part.attachment_name().is_some()
+}
+
+fn name_of(part: &MessagePart<'_>) -> String {
+    part.attachment_name().unwrap_or("attachment").to_string()
+}
+
 pub(crate) fn attachment_names(message: &mail_parser::Message<'_>) -> Vec<String> {
     message
         .attachments()
-        .filter(|part: &MessagePart<'_>| !part.is_inline() || part.attachment_name().is_some())
-        .map(|part| part.attachment_name().unwrap_or("attachment").to_string())
+        .filter(listed)
+        .map(|part| name_of(&part))
         .collect()
+}
+
+pub(crate) fn attachment(raw: &[u8], index: usize, name: &str) -> Option<Vec<u8>> {
+    let message = mail_parser::MessageParser::default().parse(raw)?;
+    let parts: Vec<MessagePart<'_>> = message.attachments().filter(listed).collect();
+    let part = parts
+        .get(index)
+        .filter(|part| name_of(part) == name)
+        .or_else(|| parts.iter().find(|part| name_of(part) == name))?;
+    Some(part.decoded().into_owned())
 }
 
 fn from_html(html: &str) -> String {
@@ -73,7 +91,20 @@ pub(crate) fn reply_part(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::reply_part;
+    use super::{attachment, attachment_names, reply_part};
+
+    const WITH_FILES: &[u8] = b"From: a@example.com\r\nSubject: Files\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nTwo files.\r\n--x\r\nContent-Type: text/plain; name=notes.txt\r\nContent-Disposition: attachment; filename=notes.txt\r\n\r\nfirst\r\n--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=data.bin\r\nContent-Transfer-Encoding: base64\r\n\r\nAAEC\r\n--x--\r\n";
+
+    #[test]
+    fn pulls_an_attachment_out_by_position_and_name() {
+        let message = mail_parser::MessageParser::default()
+            .parse(WITH_FILES)
+            .expect("a message");
+        assert_eq!(attachment_names(&message), ["notes.txt", "data.bin"]);
+        assert_eq!(attachment(WITH_FILES, 1, "data.bin"), Some(vec![0, 1, 2]));
+        assert_eq!(attachment(WITH_FILES, 0, "data.bin"), Some(vec![0, 1, 2]));
+        assert_eq!(attachment(WITH_FILES, 0, "missing.pdf"), None);
+    }
 
     #[test]
     fn cuts_an_attribution_and_the_quote_below_it() {

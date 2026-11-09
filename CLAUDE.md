@@ -17,7 +17,8 @@ The store crate, `store/` (`zirbe-store`), is the mail engine behind
 outgoing message), `secrets.rs` (keyring-core) and `cache.rs`. Its worker thread
 runs tokio, syncs on a timer, and publishes snapshots the window reads without
 waiting. The app crate is the window: `app.rs` lays it out, `list.rs` draws the
-conversation rows, `bubbles.rs` the messages, `signin.rs` the account form,
+conversation rows, `bubbles.rs` the messages and their attachment chips,
+`files.rs` opening and saving attachments, `signin.rs` the account form,
 `demo.rs` the sample conversations behind `--demo`, and `viewer.rs` the Email
 View, a wry web view that the same binary runs as a separate process
 (`zirbe --email-view [--images] <title>`, the HTML on stdin) because the egui

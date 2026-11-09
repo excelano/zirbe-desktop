@@ -1,6 +1,7 @@
 // Author: David M. Anderson
 // Built with AI assistance (Claude, Anthropic)
 
+use async_imap::imap_proto::{BodyParams, BodyStructure};
 use chrono::{DateTime, TimeZone, Utc};
 use mail_parser::{AddressList, MessageParser};
 
@@ -21,6 +22,7 @@ pub(crate) enum Body<'a> {
     FirstPart {
         mime: Option<&'a [u8]>,
         data: &'a [u8],
+        attachments: Vec<String>,
     },
 }
 
@@ -34,14 +36,18 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
             false,
             content::has_html(&headers),
         ),
-        Body::FirstPart { mime, data } => {
+        Body::FirstPart {
+            mime,
+            data,
+            attachments,
+        } => {
             let mut raw = mime.unwrap_or(b"Content-Type: text/plain\r\n\r\n").to_vec();
             raw.extend_from_slice(data);
             let text = parser
                 .parse(&raw)
                 .map(|part| content::text_of(&part))
                 .unwrap_or_default();
-            (text, Vec::new(), true, true)
+            (text, attachments.clone(), true, true)
         }
     };
     let date = headers
@@ -73,6 +79,71 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
         partial,
         html,
     })
+}
+
+pub(crate) fn attachment_names(structure: &BodyStructure<'_>) -> Vec<String> {
+    let common = match structure {
+        BodyStructure::Multipart { bodies, .. } => {
+            return bodies.iter().flat_map(attachment_names).collect();
+        }
+        BodyStructure::Basic { common, .. }
+        | BodyStructure::Text { common, .. }
+        | BodyStructure::Message { common, .. } => common,
+    };
+    let disposition = common.disposition.as_ref();
+    let attached =
+        disposition.is_some_and(|disposition| disposition.ty.eq_ignore_ascii_case("attachment"));
+    let name = disposition
+        .and_then(|disposition| parameter(&disposition.params, "filename"))
+        .or_else(|| parameter(&common.ty.params, "name"));
+    if attached || name.is_some() {
+        vec![name.unwrap_or_else(|| "attachment".into())]
+    } else {
+        Vec::new()
+    }
+}
+
+fn parameter(params: &BodyParams<'_>, key: &str) -> Option<String> {
+    let params = params.as_deref()?;
+    if let Some((_, value)) = params
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(key))
+    {
+        let header = format!("Subject: {value}\r\n\r\n");
+        return MessageParser::default()
+            .parse(header.as_bytes())
+            .and_then(|parsed| parsed.subject().map(str::to_string))
+            .or_else(|| Some(value.to_string()));
+    }
+    let extended = format!("{key}*");
+    let (_, value) = params
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(&extended))?;
+    let encoded = value.splitn(3, '\'').nth(2).unwrap_or(value);
+    Some(percent_decoded(encoded))
+}
+
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let hex = (bytes[index] == b'%')
+            .then(|| text.get(index + 1..index + 3))
+            .flatten()
+            .and_then(|digits| u8::from_str_radix(digits, 16).ok());
+        match hex {
+            Some(byte) => {
+                out.push(byte);
+                index += 3;
+            }
+            None => {
+                out.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn bracketed(id: &str) -> String {
@@ -169,11 +240,31 @@ Content-Type: text/html; charset=utf-8\r\n\
             body: Body::FirstPart {
                 mime: Some(b"Content-Type: text/plain; charset=utf-8\r\n\r\n"),
                 data: b"Here they are.",
+                attachments: vec!["beach.jpg".into()],
             },
             arrived: None,
         })
         .expect("a message");
         assert_eq!(message.text, "Here they are.");
+        assert_eq!(message.attachments, ["beach.jpg"]);
         assert!(message.partial);
+    }
+
+    #[test]
+    fn decodes_attachment_names_from_the_body_structure() {
+        use std::borrow::Cow;
+        let encoded: BodyParams<'_> = Some(vec![(
+            Cow::Borrowed("name"),
+            Cow::Borrowed("=?UTF-8?Q?Gr=C3=BC=C3=9Fe.pdf?="),
+        )]);
+        assert_eq!(parameter(&encoded, "name").as_deref(), Some("Grüße.pdf"));
+        let extended: BodyParams<'_> = Some(vec![(
+            Cow::Borrowed("FILENAME*"),
+            Cow::Borrowed("utf-8''Gr%C3%BC%C3%9Fe.pdf"),
+        )]);
+        assert_eq!(
+            parameter(&extended, "filename").as_deref(),
+            Some("Grüße.pdf")
+        );
     }
 }

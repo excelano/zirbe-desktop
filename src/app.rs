@@ -10,9 +10,10 @@ use eframe::egui::{
 };
 use zirbe_store::{Account, Conversation, Draft, MailSource, Reply, Status, Store};
 
-use crate::bubbles::{self, Opening};
+use crate::bubbles::{self, Action, Choice};
 use crate::dates;
 use crate::demo::Demo;
+use crate::files;
 use crate::list;
 use crate::palette::Palette;
 use crate::signin::{Outcome, SignIn};
@@ -53,11 +54,60 @@ struct Sending {
     reply: Reply,
 }
 
-struct Viewing {
+struct Fetching {
     conversation: String,
-    title: String,
-    images: bool,
-    reply: Reply<String>,
+    work: Work,
+}
+
+enum Work {
+    Email {
+        title: String,
+        images: bool,
+        reply: Reply<String>,
+    },
+    Open {
+        name: String,
+        reply: Reply<Vec<u8>>,
+    },
+    Save {
+        name: String,
+        reply: Reply<Vec<u8>>,
+    },
+    Saving {
+        name: String,
+        reply: Reply,
+    },
+}
+
+impl Work {
+    fn doing(&self) -> String {
+        match self {
+            Work::Email { .. } => "Opening the email…".into(),
+            Work::Open { name, .. } | Work::Save { name, .. } => format!("Downloading {name}…"),
+            Work::Saving { name, .. } => format!("Saving {name}…"),
+        }
+    }
+
+    fn failed(&self, error: &str) -> String {
+        match self {
+            Work::Email { .. } => format!("The email did not open: {error}"),
+            Work::Open { name, .. } => format!("{name} did not open: {error}"),
+            Work::Save { name, .. } | Work::Saving { name, .. } => {
+                format!("{name} was not saved: {error}")
+            }
+        }
+    }
+}
+
+fn arrived<T>(reply: &Reply<T>, ctx: &egui::Context) -> Option<Result<T, String>> {
+    match reply.try_recv() {
+        Ok(result) => Some(result),
+        Err(TryRecvError::Empty) => {
+            ctx.request_repaint_after(Duration::from_millis(150));
+            None
+        }
+        Err(TryRecvError::Disconnected) => Some(Err("the mail engine stopped".into())),
+    }
 }
 
 pub struct App {
@@ -67,7 +117,7 @@ pub struct App {
     selected: Option<String>,
     drafts: HashMap<String, String>,
     sending: Option<Sending>,
-    viewing: Option<Viewing>,
+    fetching: Option<Fetching>,
     failure: Option<(String, String)>,
     pane: Pane,
     accounts_open: bool,
@@ -87,7 +137,7 @@ impl App {
             selected: None,
             drafts: HashMap::new(),
             sending: None,
-            viewing: None,
+            fetching: None,
             failure: None,
             pane: Pane::Conversation,
             accounts_open: false,
@@ -168,24 +218,42 @@ impl App {
         }
     }
 
-    fn poll_viewing(&mut self, ctx: &egui::Context) {
-        let Some(viewing) = &self.viewing else { return };
-        let result = match viewing.reply.try_recv() {
-            Ok(Ok(html)) => viewer::open(&viewing.title, html, viewing.images),
-            Ok(Err(error)) => Err(error),
-            Err(TryRecvError::Empty) => {
-                ctx.request_repaint_after(Duration::from_millis(150));
-                return;
-            }
-            Err(TryRecvError::Disconnected) => Ok(()),
+    fn poll_fetching(&mut self, ctx: &egui::Context) {
+        let Some(Fetching { conversation, work }) = self.fetching.take() else {
+            return;
         };
-        if let Err(error) = result {
-            self.failure = Some((
-                viewing.conversation.clone(),
-                format!("The email did not open. {error}"),
-            ));
+        let failed = |error: String| work.failed(&error);
+        let next = match &work {
+            Work::Email {
+                title,
+                images,
+                reply,
+            } => arrived(reply, ctx).map(|result| {
+                result
+                    .and_then(|html| viewer::open(title, html, *images))
+                    .map(|()| None)
+            }),
+            Work::Open { name, reply } => arrived(reply, ctx).map(|result| {
+                result
+                    .and_then(|bytes| files::open(name, &bytes))
+                    .map(|()| None)
+            }),
+            Work::Save { name, reply } => arrived(reply, ctx).map(|result| {
+                result.map(|bytes| {
+                    Some(Work::Saving {
+                        name: name.clone(),
+                        reply: files::save(name.clone(), bytes),
+                    })
+                })
+            }),
+            Work::Saving { reply, .. } => arrived(reply, ctx).map(|result| result.map(|()| None)),
+        };
+        match next {
+            None => self.fetching = Some(Fetching { conversation, work }),
+            Some(Ok(Some(work))) => self.fetching = Some(Fetching { conversation, work }),
+            Some(Ok(None)) => {}
+            Some(Err(error)) => self.failure = Some((conversation, failed(error))),
         }
-        self.viewing = None;
     }
 
     fn sidebar(&mut self, ui: &mut Ui, conversations: &[Conversation]) {
@@ -374,7 +442,7 @@ impl App {
                     .map_or(conversation.account.as_str(), |account| {
                         account.address.as_str()
                     });
-                let opening = ScrollArea::vertical()
+                let action = ScrollArea::vertical()
                     .id_salt(&conversation.key)
                     .stick_to_bottom(true)
                     .auto_shrink(false)
@@ -383,13 +451,30 @@ impl App {
                         bubbles::show(ui, &conversation, me, dates::today(), self.clock, &palette)
                     })
                     .inner;
-                if let Some(Opening { message, images }) = opening {
+                if let Some(Action { message, choice }) = action {
+                    let mail = self.source.mail();
+                    let account = conversation.account.as_str();
+                    let name =
+                        |index: usize| message.attachments.get(index).cloned().unwrap_or_default();
+                    let work = match choice {
+                        Choice::Email { images } => Work::Email {
+                            title: list::title(&conversation).to_string(),
+                            images,
+                            reply: mail.email(account, &message),
+                        },
+                        Choice::Open(index) => Work::Open {
+                            name: name(index),
+                            reply: mail.attachment(account, &message, index),
+                        },
+                        Choice::Save(index) => Work::Save {
+                            name: name(index),
+                            reply: mail.attachment(account, &message, index),
+                        },
+                    };
                     self.failure = None;
-                    self.viewing = Some(Viewing {
+                    self.fetching = Some(Fetching {
                         conversation: conversation.key.clone(),
-                        title: list::title(&conversation).to_string(),
-                        images,
-                        reply: self.source.mail().email(&conversation.account, &message),
+                        work,
                     });
                 }
             });
@@ -403,15 +488,13 @@ impl App {
             ui.label(RichText::new(error).size(12.0).color(palette.failure));
             ui.add_space(4.0);
         }
-        if self
-            .viewing
-            .as_ref()
-            .is_some_and(|viewing| viewing.conversation == conversation.key)
+        if let Some(fetching) = &self.fetching
+            && fetching.conversation == conversation.key
         {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label(
-                    RichText::new("Opening the email…")
+                    RichText::new(fetching.work.doing())
                         .size(12.0)
                         .color(palette.secondary),
                 );
@@ -706,7 +789,7 @@ impl eframe::App for App {
         }
         self.shortcuts(&ctx);
         self.poll_sending(&ctx);
-        self.poll_viewing(&ctx);
+        self.poll_fetching(&ctx);
         let needs_account = match &self.source {
             Source::Live(store) => {
                 store.accounts().is_empty() && matches!(store.status(), Status::NoAccounts)

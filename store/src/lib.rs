@@ -44,6 +44,7 @@ pub trait MailSource {
     fn mark_read(&self, conversation: &Conversation);
     fn refresh(&self);
     fn email(&self, account: &str, message: &Message) -> Reply<String>;
+    fn attachment(&self, account: &str, message: &Message, index: usize) -> Reply<Vec<u8>>;
 }
 
 pub struct Store {
@@ -86,6 +87,14 @@ enum Command {
         folder: Folder,
         uid: u32,
         reply: reply::Sender<Result<String, String>>,
+    },
+    Attachment {
+        account: String,
+        folder: Folder,
+        uid: u32,
+        index: usize,
+        name: String,
+        reply: reply::Sender<Result<Vec<u8>, String>>,
     },
 }
 
@@ -201,6 +210,19 @@ impl MailSource for Store {
         });
         receiver
     }
+
+    fn attachment(&self, account: &str, message: &Message, index: usize) -> Reply<Vec<u8>> {
+        let (sender, receiver) = reply::channel();
+        let _ = self.commands.send(Command::Attachment {
+            account: account.to_string(),
+            folder: message.folder,
+            uid: message.uid,
+            index,
+            name: message.attachments.get(index).cloned().unwrap_or_default(),
+            reply: sender,
+        });
+        receiver
+    }
 }
 
 struct Worker {
@@ -281,7 +303,29 @@ impl Worker {
                 uid,
                 reply,
             } => {
-                let _ = reply.send(self.email(&account, folder, uid).await);
+                let document = match self.raw(&account, folder, uid).await {
+                    Ok(raw) => blocking(move || email::document(&raw))
+                        .await
+                        .ok_or_else(|| "the message could not be read".to_string()),
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(document);
+            }
+            Command::Attachment {
+                account,
+                folder,
+                uid,
+                index,
+                name,
+                reply,
+            } => {
+                let file = match self.raw(&account, folder, uid).await {
+                    Ok(raw) => blocking(move || content::attachment(&raw, index, &name))
+                        .await
+                        .ok_or_else(|| "the attachment is no longer in the message".to_string()),
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(file);
             }
         }
     }
@@ -494,7 +538,7 @@ impl Worker {
         }
     }
 
-    async fn email(&self, account: &str, folder: Folder, uid: u32) -> Result<String, String> {
+    async fn raw(&self, account: &str, folder: Folder, uid: u32) -> Result<Vec<u8>, String> {
         let known = self
             .account(account)
             .ok_or("that account is no longer signed in")?;
@@ -513,9 +557,6 @@ impl Worker {
         let mut connection = Connection::open(&known, &password).await?;
         let raw = connection.whole(&host, &mailbox, uid).await;
         connection.close().await;
-        let raw = raw?;
-        blocking(move || email::document(&raw))
-            .await
-            .ok_or_else(|| "the message could not be read".to_string())
+        raw
     }
 }
