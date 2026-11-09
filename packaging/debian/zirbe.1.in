@@ -1,0 +1,52 @@
+.\" Manual page for zirbe. @VERSION@ is filled in by build-deb.sh.
+.\"
+.\" Author: David M. Anderson
+.\" Built with AI assistance (Claude, Anthropic)
+.TH ZIRBE 1 "2026\-11\-09" "zirbe @VERSION@" "User Commands"
+.SH NAME
+zirbe \- email that reads like a conversation
+.SH SYNOPSIS
+.B zirbe
+.RB [ \-\-demo ]
+.SH DESCRIPTION
+.B Zirbe
+shows the mail in an IMAP account as conversations. A conversation is an
+email thread, joined by its Message\-ID, In\-Reply\-To and References headers;
+its subject is the conversation's name, the people on From, To and Cc are its
+members, and each message is a bubble. Mail you sent, read from the account's
+Sent folder, sits on the right.
+.PP
+A reply goes to everyone in the conversation and carries the threading headers,
+so it stays in the thread for every other mail program. A new conversation
+needs a name, which becomes its subject.
+.SH OPTIONS
+.TP
+.B \-\-demo
+Show sample conversations instead of the accounts signed in.
+.SH KEYS
+.TP
+.B Enter
+Send the reply being written; Shift+Enter starts a new line.
+.TP
+.B Ctrl+N
+Start a new conversation.
+.TP
+.B Ctrl+R
+Check for mail now.
+.SH FILES
+.TP
+.I ~/.config/zirbe/accounts.json
+The accounts signed in: address, name and servers, with no password.
+.TP
+.I ~/.cache/zirbe/
+The newest messages of each account's inbox and Sent folder, readable only by the user.
+.PP
+Passwords are kept in the desktop keyring under the attribute
+.BR service=zirbe ,
+with the account's address as
+.BR username .
+.SH EXIT STATUS
+Returns success when the window has been closed. A non\-zero status means the
+window could not be created at all: no display, or no usable graphics driver.
+.SH AUTHOR
+David M. Anderson <david.anderson@excelano.com>

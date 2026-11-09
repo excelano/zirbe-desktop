@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  Embedded in zirbe.exe by build.rs through the MSVC linker. It declares DPI
+  awareness before any of the program's code runs, and the Windows App
+  Certification Kit reads this manifest rather than the running process.
+  dpiAware is what Windows before 1703 reads, dpiAwareness what later
+  versions prefer; PerMonitorV2 is what winit sets at run time.
+
+  Author: David M. Anderson
+  Built with AI assistance (Claude, Anthropic)
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>

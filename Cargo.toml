@@ -1,0 +1,36 @@
+[workspace]
+members = ["store"]
+
+[package]
+name = "zirbe"
+description = "Email that reads like a conversation"
+version = "0.1.0"
+edition = "2024"
+authors = ["David M. Anderson"]
+license = "MIT"
+repository = "https://github.com/excelano/zirbe-desktop"
+publish = false
+rust-version = "1.98"
+
+[[bin]]
+name = "zirbe"
+path = "src/main.rs"
+
+[dependencies]
+zirbe-store = { path = "store" }
+chrono = "0.4"
+eframe = "0.37"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "7"
+
+png = { version = "0.18", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"
+
+[features]
+screenshot = ["dep:png"]
+
+[profile.release]
+lto = "thin"

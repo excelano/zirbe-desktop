@@ -1,0 +1,5 @@
+zirbe (0.1.0) unstable; urgency=medium
+
+  * Zirbe for the Linux desktop: an IMAP and SMTP account read as conversations, with replies and new conversations
+
+ -- David M. Anderson <david.anderson@excelano.com>  Mon, 09 Nov 2026 11:50:35 -0600

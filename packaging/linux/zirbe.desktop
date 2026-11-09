@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Zirbe
+GenericName=Email
+Comment=Email that reads like a conversation
+Exec=zirbe
+Icon=zirbe
+Terminal=false
+Categories=Network;Email;
+Keywords=email;mail;imap;smtp;conversation;
+StartupNotify=true
+StartupWMClass=zirbe
