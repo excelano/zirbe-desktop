@@ -72,6 +72,8 @@ pub struct Message {
     pub attachments: Vec<String>,
     pub seen: bool,
     pub partial: bool,
+    #[serde(default)]
+    pub html: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

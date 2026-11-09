@@ -277,6 +277,22 @@ impl Connection {
         Ok(())
     }
 
+    pub async fn whole(&mut self, host: &str, mailbox: &str, uid: u32) -> Result<Vec<u8>, String> {
+        self.session.examine(mailbox).await.map_err(failed(host))?;
+        let fetched: Vec<Fetch> = self
+            .session
+            .uid_fetch(uid.to_string(), "(UID BODY.PEEK[])")
+            .await
+            .map_err(failed(host))?
+            .try_collect()
+            .await
+            .map_err(failed(host))?;
+        fetched
+            .iter()
+            .find_map(|fetch| fetch.body().map(<[u8]>::to_vec))
+            .ok_or_else(|| format!("{host} no longer has this message"))
+    }
+
     pub async fn mark_seen(
         &mut self,
         host: &str,

@@ -88,6 +88,7 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
                     .collect(),
                 seen: line.seen,
                 partial: false,
+                html: !mine,
             }
         })
         .collect();
@@ -264,6 +265,7 @@ impl MailSource for Demo {
             attachments: Vec::new(),
             seen: true,
             partial: false,
+            html: false,
         };
         match key.and_then(|key| conversations.iter_mut().find(|c| c.key == key)) {
             Some(conversation) => conversation.messages.push(message),
@@ -294,4 +296,23 @@ impl MailSource for Demo {
     }
 
     fn refresh(&self) {}
+
+    fn email(&self, _account: &str, message: &Message) -> Reply<String> {
+        let sender = message.from.as_ref().map_or("", |from| from.display());
+        let paragraphs: String = message
+            .text
+            .split("\n\n")
+            .map(|paragraph| format!("<p>{}</p>", paragraph.replace('\n', "<br>")))
+            .collect();
+        let html = format!(
+            "<body style=\"margin:0;background:#f4f1ea;font:16px/1.5 sans-serif;color:#222\">\
+             <div style=\"max-width:600px;margin:32px auto;background:#fff;border-radius:8px;padding:32px\">\
+             <h2 style=\"margin-top:0;color:#2b674d\">{}</h2>{paragraphs}\
+             <p style=\"color:#777;font-size:13px\">{sender}</p></div></body>",
+            message.subject
+        );
+        let (reply, receiver) = mpsc::channel();
+        let _ = reply.send(Ok(html));
+        receiver
+    }
 }

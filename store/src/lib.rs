@@ -6,6 +6,7 @@
 mod cache;
 mod compose;
 mod content;
+mod email;
 mod imap;
 mod mime;
 mod model;
@@ -33,7 +34,7 @@ use mime::{Body, Fetched};
 
 const SYNC_EVERY: Duration = Duration::from_secs(120);
 
-pub type Reply = reply::Receiver<Result<(), String>>;
+pub type Reply<T = ()> = reply::Receiver<Result<T, String>>;
 
 pub trait MailSource {
     fn status(&self) -> Status;
@@ -42,6 +43,7 @@ pub trait MailSource {
     fn send(&self, draft: Draft) -> Reply;
     fn mark_read(&self, conversation: &Conversation);
     fn refresh(&self);
+    fn email(&self, account: &str, message: &Message) -> Reply<String>;
 }
 
 pub struct Store {
@@ -78,6 +80,12 @@ enum Command {
     MarkRead {
         account: String,
         uids: Vec<u32>,
+    },
+    Email {
+        account: String,
+        folder: Folder,
+        uid: u32,
+        reply: reply::Sender<Result<String, String>>,
     },
 }
 
@@ -182,6 +190,17 @@ impl MailSource for Store {
     fn refresh(&self) {
         let _ = self.commands.send(Command::Refresh);
     }
+
+    fn email(&self, account: &str, message: &Message) -> Reply<String> {
+        let (sender, receiver) = reply::channel();
+        let _ = self.commands.send(Command::Email {
+            account: account.to_string(),
+            folder: message.folder,
+            uid: message.uid,
+            reply: sender,
+        });
+        receiver
+    }
 }
 
 struct Worker {
@@ -256,6 +275,14 @@ impl Worker {
             }
             Command::Send { draft, reply } => self.send(draft, reply).await,
             Command::MarkRead { account, uids } => self.mark_read(&account, &uids).await,
+            Command::Email {
+                account,
+                folder,
+                uid,
+                reply,
+            } => {
+                let _ = reply.send(self.email(&account, folder, uid).await);
+            }
         }
     }
 
@@ -465,5 +492,30 @@ impl Worker {
                 .await;
             connection.close().await;
         }
+    }
+
+    async fn email(&self, account: &str, folder: Folder, uid: u32) -> Result<String, String> {
+        let known = self
+            .account(account)
+            .ok_or("that account is no longer signed in")?;
+        let data = self
+            .data
+            .get(account)
+            .ok_or("that account has no mail yet")?;
+        let mailbox = match folder {
+            Folder::Inbox => Some(data.inbox.name.clone()),
+            Folder::Sent => data.sent.as_ref().map(|sent| sent.name.clone()),
+        }
+        .filter(|name| !name.is_empty() && uid != 0)
+        .ok_or("this message is not on the server yet")?;
+        let password = Self::password(account).await?;
+        let host = known.imap_host.trim().to_string();
+        let mut connection = Connection::open(&known, &password).await?;
+        let raw = connection.whole(&host, &mailbox, uid).await;
+        connection.close().await;
+        let raw = raw?;
+        blocking(move || email::document(&raw))
+            .await
+            .ok_or_else(|| "the message could not be read".to_string())
     }
 }

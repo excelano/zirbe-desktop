@@ -19,6 +19,12 @@ pub(crate) fn text_of(message: &mail_parser::Message<'_>) -> String {
     String::new()
 }
 
+pub(crate) fn has_html(message: &mail_parser::Message<'_>) -> bool {
+    message
+        .html_body()
+        .any(|part| part.is_content_type("text", "html"))
+}
+
 pub(crate) fn attachment_names(message: &mail_parser::Message<'_>) -> Vec<String> {
     message
         .attachments()

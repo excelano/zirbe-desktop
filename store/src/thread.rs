@@ -168,6 +168,7 @@ pub(crate) mod tests {
             attachments: Vec::new(),
             seen: false,
             partial: false,
+            html: false,
         }
     }
 

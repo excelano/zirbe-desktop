@@ -15,6 +15,7 @@ mod paths;
 mod screenshot;
 mod signin;
 mod system;
+mod viewer;
 
 use eframe::egui::{self, CornerRadius, Stroke, Visuals};
 use zirbe_store::Store;
@@ -45,7 +46,15 @@ fn visuals(dark: bool, palette: &Palette) -> Visuals {
 }
 
 fn main() -> eframe::Result {
-    let demo = std::env::args().any(|argument| argument == "--demo");
+    let arguments: Vec<String> = std::env::args().collect();
+    if arguments.get(1).map(String::as_str) == Some(viewer::FLAG) {
+        if let Err(error) = viewer::run(&arguments[2..]) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    let demo = arguments.iter().any(|argument| argument == "--demo");
     let dark = system::dark().unwrap_or(false);
     let palette = if dark { palette::DARK } else { palette::LIGHT };
     let clock = system::clock();

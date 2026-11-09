@@ -19,6 +19,11 @@ const PADDING: Vec2 = vec2(12.0, 8.0);
 const EDGE: f32 = 12.0;
 const AVATAR: f32 = 30.0;
 
+pub struct Opening {
+    pub message: Message,
+    pub images: bool,
+}
+
 pub fn show(
     ui: &mut Ui,
     conversation: &Conversation,
@@ -26,7 +31,8 @@ pub fn show(
     today: NaiveDate,
     clock: Clock,
     palette: &Palette,
-) {
+) -> Option<Opening> {
+    let mut opening = None;
     let group = conversation.members.len() > 1;
     let widest = (ui.available_width() * 0.72).min(560.0);
     let mut previous: Option<&Message> = None;
@@ -74,17 +80,23 @@ pub fn show(
             });
         }
         ui.add_space(if same_sender { 2.0 } else { 6.0 });
-        bubble(
+        if let Some(images) = bubble(
             ui,
             message,
             mine,
             widest,
             palette,
             (!mine).then_some(!same_sender || !group),
-        );
+        ) {
+            opening = Some(Opening {
+                message: message.clone(),
+                images,
+            });
+        }
         previous = Some(message);
     }
     ui.add_space(12.0);
+    opening
 }
 
 fn content(message: &Message, color: Color32, wrap: f32) -> LayoutJob {
@@ -136,7 +148,7 @@ fn bubble(
     widest: f32,
     palette: &Palette,
     avatar: Option<bool>,
-) {
+) -> Option<bool> {
     let (fill, color) = if mine {
         (palette.accent, palette.on_accent)
     } else {
@@ -161,11 +173,31 @@ fn bubble(
         );
         list::avatar(ui, spot, message.from.as_ref());
     }
-    let text = shape.shrink2(PADDING).expand2(vec2(1.0, 0.0));
-    ui.scope_builder(
-        UiBuilder::new()
-            .max_rect(text)
-            .layout(Layout::top_down(Align::Min)),
-        |ui| ui.add(egui::Label::new(job).wrap().selectable(true)),
+    let area = ui.interact(
+        shape,
+        ui.scope_id()
+            .with(("bubble", message.uid, &message.message_id)),
+        Sense::click(),
     );
+    let text = shape.shrink2(PADDING).expand2(vec2(1.0, 0.0));
+    let label = ui
+        .scope_builder(
+            UiBuilder::new()
+                .max_rect(text)
+                .layout(Layout::top_down(Align::Min)),
+            |ui| ui.add(egui::Label::new(job).wrap().selectable(true)),
+        )
+        .inner;
+    let mut chosen = None;
+    if message.html {
+        area.union(label).context_menu(|ui| {
+            if ui.button("Email View").clicked() {
+                chosen = Some(false);
+            }
+            if ui.button("Show Images").clicked() {
+                chosen = Some(true);
+            }
+        });
+    }
+    chosen
 }

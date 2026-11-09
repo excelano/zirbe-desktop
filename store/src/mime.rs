@@ -27,11 +27,12 @@ pub(crate) enum Body<'a> {
 pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
     let parser = MessageParser::default();
     let headers = parser.parse(fetched.header)?;
-    let (text, attachments, partial) = match &fetched.body {
+    let (text, attachments, partial, html) = match &fetched.body {
         Body::Whole => (
             content::text_of(&headers),
             content::attachment_names(&headers),
             false,
+            content::has_html(&headers),
         ),
         Body::FirstPart { mime, data } => {
             let mut raw = mime.unwrap_or(b"Content-Type: text/plain\r\n\r\n").to_vec();
@@ -40,7 +41,7 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
                 .parse(&raw)
                 .map(|part| content::text_of(&part))
                 .unwrap_or_default();
-            (text, Vec::new(), true)
+            (text, Vec::new(), true, true)
         }
     };
     let date = headers
@@ -70,6 +71,7 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
         attachments,
         seen: fetched.seen,
         partial,
+        html,
     })
 }
 

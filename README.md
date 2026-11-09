@@ -57,8 +57,13 @@ password in the desktop keyring under `service=zirbe`.
 
 Account settings, without the password, are kept in `~/.config/zirbe`, and the
 newest messages of each inbox and Sent folder in `~/.cache/zirbe`, readable only
-by you. Messages are shown as text, so nothing in an HTML message can load from
-the network. The only connections are to your own IMAP and SMTP servers.
+by you. Messages are shown as text. Right-clicking a message offers Email View,
+which downloads that message again from your server and shows its full HTML in a
+separate window with scripts off and nothing loaded from the network; pictures
+the sender embedded in the message still show. Show Images opens the same view
+with the sender's linked images loaded, which can tell the sender you opened the
+message and roughly where you are. Links open in your browser. Apart from those
+images, the only connections are to your own IMAP and SMTP servers.
 
 ## License
 

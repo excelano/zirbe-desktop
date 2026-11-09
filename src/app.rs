@@ -10,13 +10,14 @@ use eframe::egui::{
 };
 use zirbe_store::{Account, Conversation, Draft, MailSource, Reply, Status, Store};
 
-use crate::bubbles;
+use crate::bubbles::{self, Opening};
 use crate::dates;
 use crate::demo::Demo;
 use crate::list;
 use crate::palette::Palette;
 use crate::signin::{Outcome, SignIn};
 use crate::system::Clock;
+use crate::viewer;
 
 pub enum Source {
     Live(Store),
@@ -52,6 +53,13 @@ struct Sending {
     reply: Reply,
 }
 
+struct Viewing {
+    conversation: String,
+    title: String,
+    images: bool,
+    reply: Reply<String>,
+}
+
 pub struct App {
     source: Source,
     palette: Palette,
@@ -59,6 +67,7 @@ pub struct App {
     selected: Option<String>,
     drafts: HashMap<String, String>,
     sending: Option<Sending>,
+    viewing: Option<Viewing>,
     failure: Option<(String, String)>,
     pane: Pane,
     accounts_open: bool,
@@ -78,6 +87,7 @@ impl App {
             selected: None,
             drafts: HashMap::new(),
             sending: None,
+            viewing: None,
             failure: None,
             pane: Pane::Conversation,
             accounts_open: false,
@@ -150,12 +160,32 @@ impl App {
                 self.sending = None;
             }
             Ok(Err(error)) => {
-                self.failure = Some((sending.conversation.clone(), error));
+                self.failure = Some((sending.conversation.clone(), format!("Not sent. {error}")));
                 self.sending = None;
             }
             Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
             Err(TryRecvError::Disconnected) => self.sending = None,
         }
+    }
+
+    fn poll_viewing(&mut self, ctx: &egui::Context) {
+        let Some(viewing) = &self.viewing else { return };
+        let result = match viewing.reply.try_recv() {
+            Ok(Ok(html)) => viewer::open(&viewing.title, html, viewing.images),
+            Ok(Err(error)) => Err(error),
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(150));
+                return;
+            }
+            Err(TryRecvError::Disconnected) => Ok(()),
+        };
+        if let Err(error) = result {
+            self.failure = Some((
+                viewing.conversation.clone(),
+                format!("The email did not open. {error}"),
+            ));
+        }
+        self.viewing = None;
     }
 
     fn sidebar(&mut self, ui: &mut Ui, conversations: &[Conversation]) {
@@ -344,14 +374,24 @@ impl App {
                     .map_or(conversation.account.as_str(), |account| {
                         account.address.as_str()
                     });
-                ScrollArea::vertical()
+                let opening = ScrollArea::vertical()
                     .id_salt(&conversation.key)
                     .stick_to_bottom(true)
                     .auto_shrink(false)
                     .show(ui, |ui| {
                         ui.add_space(8.0);
-                        bubbles::show(ui, &conversation, me, dates::today(), self.clock, &palette);
+                        bubbles::show(ui, &conversation, me, dates::today(), self.clock, &palette)
+                    })
+                    .inner;
+                if let Some(Opening { message, images }) = opening {
+                    self.failure = None;
+                    self.viewing = Some(Viewing {
+                        conversation: conversation.key.clone(),
+                        title: list::title(&conversation).to_string(),
+                        images,
+                        reply: self.source.mail().email(&conversation.account, &message),
                     });
+                }
             });
     }
 
@@ -360,11 +400,22 @@ impl App {
         if let Some((key, error)) = &self.failure
             && key == &conversation.key
         {
-            ui.label(
-                RichText::new(format!("Not sent. {error}"))
-                    .size(12.0)
-                    .color(palette.failure),
-            );
+            ui.label(RichText::new(error).size(12.0).color(palette.failure));
+            ui.add_space(4.0);
+        }
+        if self
+            .viewing
+            .as_ref()
+            .is_some_and(|viewing| viewing.conversation == conversation.key)
+        {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(
+                    RichText::new("Opening the email…")
+                        .size(12.0)
+                        .color(palette.secondary),
+                );
+            });
             ui.add_space(4.0);
         }
         let sending = self
@@ -655,6 +706,7 @@ impl eframe::App for App {
         }
         self.shortcuts(&ctx);
         self.poll_sending(&ctx);
+        self.poll_viewing(&ctx);
         let needs_account = match &self.source {
             Source::Live(store) => {
                 store.accounts().is_empty() && matches!(store.status(), Status::NoAccounts)

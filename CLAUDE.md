@@ -11,20 +11,25 @@ are the user's own mail servers.
 
 The store crate, `store/` (`zirbe-store`), is the mail engine behind
 `MailSource`: `imap.rs` (async-imap over tokio-rustls), `smtp.rs` (lettre),
-`mime.rs` and `content.rs` (mail-parser, html2text, quote folding), `thread.rs`
+`mime.rs` and `content.rs` (mail-parser, html2text, quote folding), `email.rs`
+(a message's HTML for Email View, its embedded images inlined), `thread.rs`
 (grouping by the threading headers), `compose.rs` (reply recipients and the
 outgoing message), `secrets.rs` (keyring-core) and `cache.rs`. Its worker thread
 runs tokio, syncs on a timer, and publishes snapshots the window reads without
 waiting. The app crate is the window: `app.rs` lays it out, `list.rs` draws the
 conversation rows, `bubbles.rs` the messages, `signin.rs` the account form,
-`demo.rs` the sample conversations behind `--demo`.
+`demo.rs` the sample conversations behind `--demo`, and `viewer.rs` the Email
+View, a wry web view that the same binary runs as a separate process
+(`zirbe --email-view [--images] <title>`, the HTML on stdin) because the egui
+window owns the event loop.
 
 ## Platforms
 
 Linux is the only platform built and shipped. Code that differs by platform sits
 behind `cfg(target_os)` so the macOS and Windows lanes can be added without
 restructuring: the keyring store in `store/src/secrets.rs`, the desktop settings
-read over the XDG portal in `src/system.rs`, the empty window icon on macOS in
+read over the XDG portal in `src/system.rs`, the web view's window, engine
+settings and page address in `src/viewer.rs`, the empty window icon on macOS in
 `src/main.rs`, and the Windows manifest that `build.rs` embeds. Paths come from
 `dirs`. `ring` compiles C, so a cross-target `cargo check` from Linux needs that
 platform's SDK headers; check those arms on the Mac and on winwork.
@@ -48,8 +53,10 @@ run against a live account without touching the real profile.
 
 ## Rules
 
-Messages are shown as text; nothing from a message is rendered as HTML or
-fetched. Plain IMAP or SMTP without TLS is never offered. Server discovery is
+Messages are shown as text. HTML is rendered only in Email View, which the user
+opens per message, under the Content Security Policy in `src/viewer.rs`: nothing
+leaves the machine unless the user chose Show Images, and then only images.
+Script stays off in both cases. Plain IMAP or SMTP without TLS is never offered. Server discovery is
 the offline table in `store/src/presets.rs`, never a network lookup, because
 autoconfig and SRV lookups leak the address to a third party. Don't commit,
 push or publish unless David asks.
