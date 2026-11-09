@@ -75,6 +75,7 @@ pub fn run(arguments: &[String]) -> Result<(), String> {
         })
         .with_url(PAGE)
         .with_devtools(false)
+        .with_incognito(true)
         .with_navigation_handler(|url| url.starts_with(PAGE) || outside(&url))
         .with_new_window_req_handler(|url, _| {
             outside(&url);
