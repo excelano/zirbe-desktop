@@ -1,3 +1,12 @@
+zirbe (0.1.1) unstable; urgency=medium
+
+  * Open and save attachments
+  * Keep Email View from writing a web cache to disk
+  * Email View and Show Images for HTML messages
+  * Give the server fields on the sign-in form their full width
+
+ -- David M. Anderson <david.anderson@excelano.com>  Mon, 09 Nov 2026 16:26:43 -0600
+
 zirbe (0.1.0) unstable; urgency=medium
 
   * Zirbe for the Linux desktop: an IMAP and SMTP account read as conversations, with replies and new conversations
