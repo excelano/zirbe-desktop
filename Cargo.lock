@@ -6795,7 +6795,7 @@ dependencies = [
 
 [[package]]
 name = "zirbe"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "dirs",
@@ -6814,7 +6814,7 @@ dependencies = [
 
 [[package]]
 name = "zirbe-store"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "apple-native-keyring-store",
  "async-imap",
