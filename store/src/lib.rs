@@ -7,6 +7,7 @@ mod cache;
 mod compose;
 mod content;
 mod email;
+mod folders;
 mod imap;
 mod mime;
 mod model;
@@ -16,7 +17,7 @@ mod smtp;
 mod subject;
 mod thread;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock, mpsc as reply};
 use std::time::Duration;
@@ -25,7 +26,9 @@ use chrono::Utc;
 use tokio::sync::mpsc;
 
 pub use compose::{parse_people, reply};
-pub use model::{Account, Conversation, Draft, Folder, Message, Person, Status};
+pub use model::{
+    Account, Conversation, Draft, FolderInfo, INBOX, Message, Person, Role, Scope, Status,
+};
 pub use presets::{Preset, for_address};
 
 use cache::{AccountData, Mailbox};
@@ -40,6 +43,8 @@ pub trait MailSource {
     fn status(&self) -> Status;
     fn accounts(&self) -> Vec<Account>;
     fn conversations(&self) -> Arc<Vec<Conversation>>;
+    fn folders(&self, account: &str) -> Vec<FolderInfo>;
+    fn open(&self, scope: &Scope);
     fn send(&self, draft: Draft) -> Reply;
     fn mark_read(&self, conversation: &Conversation);
     fn refresh(&self);
@@ -62,10 +67,12 @@ struct Shared {
 struct Snapshot {
     accounts: Vec<Account>,
     conversations: Arc<Vec<Conversation>>,
+    folders: HashMap<String, Vec<FolderInfo>>,
 }
 
 enum Command {
     Refresh,
+    Open(Scope),
     SignIn {
         account: Account,
         password: String,
@@ -80,17 +87,17 @@ enum Command {
     },
     MarkRead {
         account: String,
-        uids: Vec<u32>,
+        uids: Vec<(String, u32)>,
     },
     Email {
         account: String,
-        folder: Folder,
+        mailbox: String,
         uid: u32,
         reply: reply::Sender<Result<String, String>>,
     },
     Attachment {
         account: String,
-        folder: Folder,
+        mailbox: String,
         uid: u32,
         index: usize,
         name: String,
@@ -116,6 +123,7 @@ impl Store {
             cache_dir,
             accounts: Vec::new(),
             data: HashMap::new(),
+            open: Scope::AllInboxes,
         };
         std::thread::Builder::new()
             .name("mail sync".into())
@@ -181,12 +189,27 @@ impl MailSource for Store {
         receiver
     }
 
+    fn folders(&self, account: &str) -> Vec<FolderInfo> {
+        self.shared
+            .published
+            .read()
+            .expect("published lock")
+            .folders
+            .get(account)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn open(&self, scope: &Scope) {
+        let _ = self.commands.send(Command::Open(scope.clone()));
+    }
+
     fn mark_read(&self, conversation: &Conversation) {
-        let uids: Vec<u32> = conversation
+        let uids: Vec<(String, u32)> = conversation
             .messages
             .iter()
-            .filter(|message| message.folder == Folder::Inbox && !message.seen)
-            .map(|message| message.uid)
+            .filter(|message| !message.seen && message.uid != 0)
+            .map(|message| (message.mailbox.clone(), message.uid))
             .collect();
         if !uids.is_empty() {
             let _ = self.commands.send(Command::MarkRead {
@@ -204,7 +227,7 @@ impl MailSource for Store {
         let (sender, receiver) = reply::channel();
         let _ = self.commands.send(Command::Email {
             account: account.to_string(),
-            folder: message.folder,
+            mailbox: message.mailbox.clone(),
             uid: message.uid,
             reply: sender,
         });
@@ -215,7 +238,7 @@ impl MailSource for Store {
         let (sender, receiver) = reply::channel();
         let _ = self.commands.send(Command::Attachment {
             account: account.to_string(),
-            folder: message.folder,
+            mailbox: message.mailbox.clone(),
             uid: message.uid,
             index,
             name: message.attachments.get(index).cloned().unwrap_or_default(),
@@ -231,6 +254,7 @@ struct Worker {
     cache_dir: PathBuf,
     accounts: Vec<Account>,
     data: HashMap<String, AccountData>,
+    open: Scope,
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
@@ -271,6 +295,14 @@ impl Worker {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::Refresh => self.sync().await,
+            Command::Open(scope) => {
+                self.open = scope;
+                if let Scope::Mailbox { account, .. } = &self.open
+                    && let Some(known) = self.account(account)
+                {
+                    self.sync_accounts(vec![known]).await;
+                }
+            }
             Command::SignIn {
                 account,
                 password,
@@ -299,11 +331,11 @@ impl Worker {
             Command::MarkRead { account, uids } => self.mark_read(&account, &uids).await,
             Command::Email {
                 account,
-                folder,
+                mailbox,
                 uid,
                 reply,
             } => {
-                let document = match self.raw(&account, folder, uid).await {
+                let document = match self.raw(&account, &mailbox, uid).await {
                     Ok(raw) => blocking(move || email::document(&raw))
                         .await
                         .ok_or_else(|| "the message could not be read".to_string()),
@@ -313,13 +345,13 @@ impl Worker {
             }
             Command::Attachment {
                 account,
-                folder,
+                mailbox,
                 uid,
                 index,
                 name,
                 reply,
             } => {
-                let file = match self.raw(&account, folder, uid).await {
+                let file = match self.raw(&account, &mailbox, uid).await {
                     Ok(raw) => blocking(move || content::attachment(&raw, index, &name))
                         .await
                         .ok_or_else(|| "the attachment is no longer in the message".to_string()),
@@ -351,9 +383,15 @@ impl Worker {
             .flatten()
             .collect();
         conversations.sort_by_key(|conversation| std::cmp::Reverse(conversation.latest()));
+        let folders = self
+            .data
+            .iter()
+            .map(|(account, data)| (account.clone(), data.folders.clone()))
+            .collect();
         *self.shared.published.write().expect("published lock") = Snapshot {
             accounts: self.accounts.clone(),
             conversations: Arc::new(conversations),
+            folders,
         };
         (self.shared.notify)();
     }
@@ -400,9 +438,13 @@ impl Worker {
             self.set_status(Status::NoAccounts);
             return;
         }
+        self.sync_accounts(self.accounts.clone()).await;
+    }
+
+    async fn sync_accounts(&mut self, accounts: Vec<Account>) {
         self.set_status(Status::Syncing);
         let mut failures = Vec::new();
-        for account in self.accounts.clone() {
+        for account in accounts {
             if let Err(error) = self.sync_account(&account).await {
                 failures.push(format!("{}: {error}", account.address));
             }
@@ -421,33 +463,59 @@ impl Worker {
         let host = account.imap_host.trim().to_string();
         let mut connection = Connection::open(account, &password).await?;
         let mut data = self.data.remove(&account.key()).unwrap_or_default();
+        let open = match &self.open {
+            Scope::Mailbox { account: key, name } if *key == account.key() => Some(name.clone()),
+            _ => None,
+        };
         let result = async {
             if data.inbox.name.is_empty() {
-                data.inbox.name = "INBOX".into();
+                data.inbox.name = INBOX.into();
             }
-            connection
-                .sync(&host, Folder::Inbox, &mut data.inbox)
-                .await?;
+            let folders = connection.folders(&host).await?;
             if data.sent.is_none()
-                && let Some(name) = connection.sent_name(&host).await?
+                && let Some(sent) = folders
+                    .iter()
+                    .find(|folder| folder.role == Some(Role::Sent))
             {
                 data.sent = Some(Mailbox {
-                    name,
+                    name: sent.name.clone(),
                     ..Mailbox::default()
                 });
             }
+            data.others
+                .retain(|name, _| folders.iter().any(|folder| &folder.name == name));
+            data.folders = folders;
+            connection.sync(&host, &mut data.inbox).await?;
             if let Some(sent) = data.sent.as_mut() {
-                connection.sync(&host, Folder::Sent, sent).await?;
+                connection.sync(&host, sent).await?;
+            }
+            if let Some(name) = open {
+                if data.mailbox_mut(&name).is_none()
+                    && data
+                        .folders
+                        .iter()
+                        .any(|folder| folder.name == name && folder.selectable)
+                {
+                    data.others.insert(
+                        name.clone(),
+                        Mailbox {
+                            name: name.clone(),
+                            ..Mailbox::default()
+                        },
+                    );
+                }
+                if let Some(mailbox) = data.others.get_mut(&name) {
+                    connection.sync(&host, mailbox).await?;
+                }
             }
             Ok(())
         }
         .await;
         let filed: HashSet<String> = data
-            .inbox
-            .messages
-            .values()
-            .chain(data.sent.iter().flat_map(|sent| sent.messages.values()))
-            .filter_map(|message| message.message_id.clone())
+            .messages()
+            .into_iter()
+            .filter(|message| message.uid != 0)
+            .filter_map(|message| message.message_id)
             .collect();
         data.unfiled.retain(|message| {
             message
@@ -484,21 +552,24 @@ impl Worker {
             let _ = reply.send(Err(error));
             return;
         }
+        let sent_name = self
+            .data
+            .get(&account.key())
+            .and_then(|data| data.sent_name())
+            .map(str::to_string);
         let local = mime::parse(&Fetched {
-            folder: Folder::Sent,
+            mailbox: sent_name.as_deref().unwrap_or_default(),
             uid: 0,
             seen: true,
             header: &raw,
             body: Body::Whole,
             arrived: Some(Utc::now()),
         });
-        let mut sent_name = None;
         if let Some(data) = self.data.get_mut(&account.key()) {
             if draft.in_reply_to.is_none() {
                 data.started.insert(id);
             }
             data.unfiled.extend(local);
-            sent_name = data.sent.as_ref().map(|sent| sent.name.clone());
         }
         self.save_data(&account.key());
         self.publish();
@@ -513,49 +584,53 @@ impl Worker {
         }
     }
 
-    async fn mark_read(&mut self, account: &str, uids: &[u32]) {
+    async fn mark_read(&mut self, account: &str, uids: &[(String, u32)]) {
         let Some(known) = self.account(account) else {
             return;
         };
         let Some(data) = self.data.get_mut(account) else {
             return;
         };
-        for uid in uids {
-            if let Some(message) = data.inbox.messages.get_mut(uid) {
+        let mut by_mailbox: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+        for (name, uid) in uids {
+            let Some(mailbox) = data.mailbox_mut(name) else {
+                continue;
+            };
+            if let Some(message) = mailbox.messages.get_mut(uid) {
                 message.seen = true;
+                by_mailbox.entry(name.clone()).or_default().push(*uid);
             }
         }
-        let inbox = data.inbox.name.clone();
+        for folder in &mut data.folders {
+            if let Some(marked) = by_mailbox.get(&folder.name) {
+                folder.unread = folder.unread.saturating_sub(marked.len() as u32);
+            }
+        }
         self.save_data(account);
         self.publish();
         if let Ok(password) = Self::password(account).await
             && let Ok(mut connection) = Connection::open(&known, &password).await
         {
-            let _ = connection
-                .mark_seen(known.imap_host.trim(), &inbox, uids)
-                .await;
+            for (name, uids) in &by_mailbox {
+                let _ = connection
+                    .mark_seen(known.imap_host.trim(), name, uids)
+                    .await;
+            }
             connection.close().await;
         }
     }
 
-    async fn raw(&self, account: &str, folder: Folder, uid: u32) -> Result<Vec<u8>, String> {
+    async fn raw(&self, account: &str, mailbox: &str, uid: u32) -> Result<Vec<u8>, String> {
         let known = self
             .account(account)
             .ok_or("that account is no longer signed in")?;
-        let data = self
-            .data
-            .get(account)
-            .ok_or("that account has no mail yet")?;
-        let mailbox = match folder {
-            Folder::Inbox => Some(data.inbox.name.clone()),
-            Folder::Sent => data.sent.as_ref().map(|sent| sent.name.clone()),
+        if mailbox.is_empty() || uid == 0 {
+            return Err("this message is not on the server yet".into());
         }
-        .filter(|name| !name.is_empty() && uid != 0)
-        .ok_or("this message is not on the server yet")?;
         let password = Self::password(account).await?;
         let host = known.imap_host.trim().to_string();
         let mut connection = Connection::open(&known, &password).await?;
-        let raw = connection.whole(&host, &mailbox, uid).await;
+        let raw = connection.whole(&host, mailbox, uid).await;
         connection.close().await;
         raw
     }

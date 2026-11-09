@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::model::{Conversation, Folder, Message, Person};
+use crate::model::{Conversation, Message, Person};
 use crate::subject;
 
 pub(crate) fn conversations(
@@ -32,19 +32,17 @@ pub(crate) fn conversations(
     }
     let mut found: Vec<Conversation> = groups
         .into_values()
-        .filter(|members| {
-            members.iter().any(|&i| {
-                messages[i].folder == Folder::Inbox
+        .map(|members| {
+            let in_inbox = members.iter().any(|&i| {
+                messages[i].in_inbox()
                     || messages[i]
                         .message_id
                         .as_ref()
                         .is_some_and(|id| started.contains(id))
-            })
-        })
-        .map(|members| {
+            });
             let mut thread: Vec<Message> = members.iter().map(|&i| messages[i].clone()).collect();
             thread.sort_by_key(|message| message.date);
-            conversation(account, me, thread)
+            conversation(account, me, thread, in_inbox)
         })
         .collect();
     found.sort_by_key(|conversation| std::cmp::Reverse(conversation.latest()));
@@ -55,7 +53,7 @@ fn without_duplicates(messages: Vec<Message>) -> Vec<Message> {
     let mut seen = HashSet::new();
     let mut kept: Vec<Message> = Vec::with_capacity(messages.len());
     let mut ordered = messages;
-    ordered.sort_by_key(|message| message.folder != Folder::Inbox);
+    ordered.sort_by_key(|message| !message.in_inbox());
     for message in ordered {
         match &message.message_id {
             Some(id) if !seen.insert(id.clone()) => {}
@@ -96,7 +94,7 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
-fn conversation(account: &str, me: &str, messages: Vec<Message>) -> Conversation {
+fn conversation(account: &str, me: &str, messages: Vec<Message>, in_inbox: bool) -> Conversation {
     let first = &messages[0];
     let anchor = first
         .references
@@ -104,7 +102,7 @@ fn conversation(account: &str, me: &str, messages: Vec<Message>) -> Conversation
         .or(first.in_reply_to.as_ref())
         .or(first.message_id.as_ref())
         .cloned()
-        .unwrap_or_else(|| format!("{:?}:{}", first.folder, first.uid));
+        .unwrap_or_else(|| format!("{}:{}", first.mailbox, first.uid));
     let title = messages
         .iter()
         .map(|message| subject::normalize(&message.subject))
@@ -123,10 +121,7 @@ fn conversation(account: &str, me: &str, messages: Vec<Message>) -> Conversation
             }
         }
     }
-    let unread = messages
-        .iter()
-        .filter(|message| message.folder == Folder::Inbox && !message.seen)
-        .count();
+    let unread = messages.iter().filter(|message| !message.seen).count();
     Conversation {
         key: format!("{account}\u{1F}{anchor}"),
         account: account.to_string(),
@@ -134,17 +129,19 @@ fn conversation(account: &str, me: &str, messages: Vec<Message>) -> Conversation
         members,
         messages,
         unread,
+        in_inbox,
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::model::Scope;
     use chrono::{TimeZone, Utc};
 
     pub(crate) fn message(id: &str, refs: &[&str], from: &str, minute: u32) -> Message {
         Message {
-            folder: Folder::Inbox,
+            mailbox: "INBOX".into(),
             uid: minute,
             message_id: Some(format!("<{id}>")),
             in_reply_to: refs.last().map(|r| format!("<{r}>")),
@@ -211,11 +208,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn keeps_one_copy_of_a_message_in_both_folders_and_drops_sent_only_threads() {
+    fn keeps_one_copy_of_a_message_in_both_folders_and_keeps_sent_only_threads_out_of_the_inbox() {
         let mut sent = message("a", &[], "me@example.org", 1);
-        sent.folder = Folder::Sent;
+        sent.mailbox = "Sent".into();
         let mut lonely = message("z", &[], "me@example.org", 9);
-        lonely.folder = Folder::Sent;
+        lonely.mailbox = "Sent".into();
         let inbox = message("a", &[], "me@example.org", 1);
         let found = conversations(
             "me@example.org",
@@ -223,17 +220,30 @@ pub(crate) mod tests {
             &BTreeSet::new(),
             vec![sent, inbox, lonely],
         );
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].messages.len(), 1);
-        assert_eq!(found[0].messages[0].folder, Folder::Inbox);
+        assert_eq!(found.len(), 2);
+        let lunch = found.iter().find(|c| c.in_inbox).expect("the inbox thread");
+        assert_eq!(lunch.messages.len(), 1);
+        assert!(lunch.messages[0].in_inbox());
+        let sent_only = found
+            .iter()
+            .find(|c| !c.in_inbox)
+            .expect("the sent-only thread");
+        assert!(
+            Scope::Mailbox {
+                account: "me@example.org".into(),
+                name: "Sent".into()
+            }
+            .holds(sent_only)
+        );
+        assert!(!Scope::AllInboxes.holds(sent_only));
     }
 
     #[test]
-    fn keeps_a_conversation_started_here_before_anyone_answers() {
+    fn keeps_a_conversation_started_here_in_the_inbox_before_anyone_answers() {
         let mut opened = message("new", &[], "me@example.org", 1);
-        opened.folder = Folder::Sent;
+        opened.mailbox = "Sent".into();
         let started = BTreeSet::from(["<new>".to_string()]);
         let found = conversations("me@example.org", "me@example.org", &started, vec![opened]);
-        assert_eq!(found.len(), 1);
+        assert!(found[0].in_inbox);
     }
 }

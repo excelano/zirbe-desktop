@@ -146,6 +146,7 @@ mod tests {
             members: Vec::new(),
             messages,
             unread: 0,
+            in_inbox: true,
         }
     }
 

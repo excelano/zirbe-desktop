@@ -17,20 +17,14 @@ use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 use crate::cache::Mailbox;
+use crate::folders::{self, Listed};
 use crate::mime::{self, Body, Fetched};
-use crate::model::{Account, Folder};
+use crate::model::{Account, FolderInfo, Role};
 
 const WINDOW: u32 = 300;
 const WHOLE_UP_TO: u32 = 2 * 1024 * 1024;
 const BATCH: usize = 25;
 const TIMEOUT: Duration = Duration::from_secs(30);
-const SENT_NAMES: [&str; 5] = [
-    "Sent",
-    "Sent Items",
-    "Sent Messages",
-    "Sent Mail",
-    "INBOX.Sent",
-];
 
 pub(crate) struct Connection {
     session: Session<TlsStream<TcpStream>>,
@@ -125,7 +119,7 @@ impl Connection {
         let _ = tokio::time::timeout(Duration::from_secs(5), self.session.logout()).await;
     }
 
-    pub async fn sent_name(&mut self, host: &str) -> Result<Option<String>, String> {
+    pub async fn folders(&mut self, host: &str) -> Result<Vec<FolderInfo>, String> {
         let names: Vec<_> = self
             .session
             .list(Some(""), Some("*"))
@@ -134,33 +128,35 @@ impl Connection {
             .try_collect()
             .await
             .map_err(failed(host))?;
-        if let Some(name) = names
+        let listed = names
             .iter()
-            .find(|name| name.attributes().contains(&NameAttribute::Sent))
-        {
-            return Ok(Some(name.name().to_string()));
+            .map(|name| {
+                let attributes = name.attributes();
+                Listed {
+                    name: name.name().to_string(),
+                    delimiter: name.delimiter().map(str::to_string),
+                    selectable: !attributes.contains(&NameAttribute::NoSelect),
+                    role: attributes.iter().find_map(|attribute| match attribute {
+                        NameAttribute::Drafts => Some(Role::Drafts),
+                        NameAttribute::Sent => Some(Role::Sent),
+                        NameAttribute::Archive => Some(Role::Archive),
+                        NameAttribute::Junk => Some(Role::Junk),
+                        NameAttribute::Trash => Some(Role::Trash),
+                        _ => None,
+                    }),
+                }
+            })
+            .collect();
+        let mut folders = folders::arrange(listed);
+        for folder in folders.iter_mut().filter(|folder| folder.selectable) {
+            if let Ok(status) = self.session.status(&folder.name, "(UNSEEN)").await {
+                folder.unread = status.unseen.unwrap_or(0);
+            }
         }
-        Ok(SENT_NAMES.iter().find_map(|wanted| {
-            names
-                .iter()
-                .find(|name| {
-                    let name = name.name();
-                    name.eq_ignore_ascii_case(wanted)
-                        || name
-                            .rsplit(['/', '.'])
-                            .next()
-                            .is_some_and(|leaf| leaf.eq_ignore_ascii_case(wanted))
-                })
-                .map(|name| name.name().to_string())
-        }))
+        Ok(folders)
     }
 
-    pub async fn sync(
-        &mut self,
-        host: &str,
-        folder: Folder,
-        mailbox: &mut Mailbox,
-    ) -> Result<(), String> {
+    pub async fn sync(&mut self, host: &str, mailbox: &mut Mailbox) -> Result<(), String> {
         let selected = self
             .session
             .select(&mailbox.name)
@@ -199,19 +195,12 @@ impl Connection {
             }
         }
         for batch in whole.chunks(BATCH) {
-            self.fetch_into(
-                host,
-                folder,
-                mailbox,
-                batch,
-                "(UID FLAGS INTERNALDATE BODY.PEEK[])",
-            )
-            .await?;
+            self.fetch_into(host, mailbox, batch, "(UID FLAGS INTERNALDATE BODY.PEEK[])")
+                .await?;
         }
         for batch in large.chunks(BATCH) {
             self.fetch_into(
                 host,
-                folder,
                 mailbox,
                 batch,
                 "(UID FLAGS INTERNALDATE BODYSTRUCTURE BODY.PEEK[HEADER] BODY.PEEK[1.MIME] BODY.PEEK[1])",
@@ -224,7 +213,6 @@ impl Connection {
     async fn fetch_into(
         &mut self,
         host: &str,
-        folder: Folder,
         mailbox: &mut Mailbox,
         uids: &[u32],
         query: &str,
@@ -244,12 +232,13 @@ impl Connection {
             .map_err(failed(host))?;
         let mime_path = SectionPath::Part(vec![1], Some(MessageSection::Mime));
         let part_path = SectionPath::Part(vec![1], None);
+        let name = mailbox.name.clone();
         for fetch in &fetched {
             let Some(uid) = fetch.uid else { continue };
             let arrived = fetch.internal_date().map(|date| date.with_timezone(&Utc));
             let parsed = match fetch.body() {
                 Some(raw) => mime::parse(&Fetched {
-                    folder,
+                    mailbox: &name,
                     uid,
                     seen: seen(fetch),
                     header: raw,
@@ -258,7 +247,7 @@ impl Connection {
                 }),
                 None => fetch.header().and_then(|header| {
                     mime::parse(&Fetched {
-                        folder,
+                        mailbox: &name,
                         uid,
                         seen: seen(fetch),
                         header,

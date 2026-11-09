@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use chrono::{DateTime, Duration, Local, NaiveTime, TimeZone, Utc};
 use zirbe_store::{
-    Account, Conversation, Draft, Folder, MailSource, Message, Person, Reply, Status,
+    Account, Conversation, Draft, FolderInfo, MailSource, Message, Person, Reply, Role, Scope,
+    Status,
 };
 
 const ME: &str = "sam@example.com";
@@ -70,7 +71,7 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
                     .collect()
             };
             Message {
-                folder: if mine { Folder::Sent } else { Folder::Inbox },
+                mailbox: if mine { "Sent" } else { "INBOX" }.to_string(),
                 uid: index as u32 + 1,
                 message_id: Some(format!("<{key}.{index}@example.com>")),
                 in_reply_to: None,
@@ -93,12 +94,40 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
         })
         .collect();
     let unread = messages.iter().filter(|message| !message.seen).count();
+    let in_inbox = messages.iter().any(Message::in_inbox);
     Conversation {
         key: key.to_string(),
         account: ME.to_string(),
         title: title.to_string(),
         members,
         messages,
+        unread,
+        in_inbox,
+    }
+}
+
+fn archived(mut conversation: Conversation) -> Conversation {
+    for message in &mut conversation.messages {
+        if message.in_inbox() {
+            message.mailbox = "Archive".into();
+        }
+    }
+    conversation.in_inbox = false;
+    conversation
+}
+
+fn folder(name: &str, depth: usize, role: Option<Role>, unread: u32) -> FolderInfo {
+    FolderInfo {
+        name: name.into(),
+        label: if name == "INBOX" {
+            "Inbox"
+        } else {
+            name.rsplit('/').next().unwrap_or(name)
+        }
+        .into(),
+        depth,
+        role,
+        selectable: true,
         unread,
     }
 }
@@ -188,7 +217,7 @@ impl Demo {
                     ),
                 ],
             ),
-            conversation(
+            archived(conversation(
                 "books",
                 "Book club: November",
                 vec![club.clone(), ana.clone()],
@@ -204,7 +233,7 @@ impl Demo {
                         "Finally. I've had it on the shelf for a year.",
                     ),
                 ],
-            ),
+            )),
         ];
         Demo {
             conversations: Mutex::new(Arc::new(conversations)),
@@ -232,6 +261,26 @@ impl MailSource for Demo {
         Arc::clone(&self.conversations.lock().expect("demo lock"))
     }
 
+    fn folders(&self, _account: &str) -> Vec<FolderInfo> {
+        let unread = self
+            .conversations()
+            .iter()
+            .flat_map(|conversation| &conversation.messages)
+            .filter(|message| message.in_inbox() && !message.seen)
+            .count() as u32;
+        vec![
+            folder("INBOX", 0, Some(Role::Inbox), unread),
+            folder("Drafts", 0, Some(Role::Drafts), 0),
+            folder("Sent", 0, Some(Role::Sent), 0),
+            folder("Archive", 0, Some(Role::Archive), 0),
+            folder("Trash", 0, Some(Role::Trash), 0),
+            folder("Projects", 0, None, 0),
+            folder("Projects/Zirbe", 1, None, 0),
+        ]
+    }
+
+    fn open(&self, _scope: &Scope) {}
+
     fn send(&self, draft: Draft) -> Reply {
         let mut guard = self.conversations.lock().expect("demo lock");
         let mut conversations: Vec<Conversation> = guard.as_ref().clone();
@@ -248,7 +297,7 @@ impl MailSource for Demo {
             })
             .map(|conversation| conversation.key.clone());
         let message = Message {
-            folder: Folder::Sent,
+            mailbox: "Sent".into(),
             uid: 0,
             message_id: Some(format!(
                 "<{}@example.com>",
@@ -273,6 +322,7 @@ impl MailSource for Demo {
                 let members = draft.to.iter().chain(&draft.cc).cloned().collect();
                 let mut started = conversation(&draft.subject, &draft.subject, members, Vec::new());
                 started.messages.push(message);
+                started.in_inbox = true;
                 conversations.push(started);
             }
         }

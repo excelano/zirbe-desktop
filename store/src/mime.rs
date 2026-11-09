@@ -6,10 +6,10 @@ use chrono::{DateTime, TimeZone, Utc};
 use mail_parser::{AddressList, MessageParser};
 
 use crate::content;
-use crate::model::{Folder, Message, Person};
+use crate::model::{Message, Person};
 
 pub(crate) struct Fetched<'a> {
-    pub folder: Folder,
+    pub mailbox: &'a str,
     pub uid: u32,
     pub seen: bool,
     pub header: &'a [u8],
@@ -56,7 +56,7 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
         .or(fetched.arrived)
         .unwrap_or_else(Utc::now);
     Some(Message {
-        folder: fetched.folder,
+        mailbox: fetched.mailbox.to_string(),
         uid: fetched.uid,
         message_id: headers.message_id().map(bracketed),
         in_reply_to: headers
@@ -196,7 +196,7 @@ Content-Type: text/html; charset=utf-8\r\n\
 
     fn whole(raw: &[u8]) -> Message {
         parse(&Fetched {
-            folder: Folder::Inbox,
+            mailbox: "INBOX",
             uid: 7,
             seen: false,
             header: raw,
@@ -233,7 +233,7 @@ Content-Type: text/html; charset=utf-8\r\n\
     fn reads_the_first_part_of_a_large_message() {
         let header = b"From: a@example.com\r\nSubject: Photos\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n";
         let message = parse(&Fetched {
-            folder: Folder::Inbox,
+            mailbox: "INBOX",
             uid: 1,
             seen: true,
             header,

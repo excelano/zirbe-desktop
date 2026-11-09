@@ -50,15 +50,61 @@ impl Person {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Folder {
+pub const INBOX: &str = "INBOX";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Role {
     Inbox,
+    Drafts,
     Sent,
+    Archive,
+    Junk,
+    Trash,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FolderInfo {
+    pub name: String,
+    pub label: String,
+    pub depth: usize,
+    pub role: Option<Role>,
+    pub selectable: bool,
+    pub unread: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    #[default]
+    AllInboxes,
+    Mailbox {
+        account: String,
+        name: String,
+    },
+}
+
+impl Scope {
+    pub fn holds(&self, conversation: &Conversation) -> bool {
+        match self {
+            Scope::AllInboxes => conversation.in_inbox,
+            Scope::Mailbox { account, name } => {
+                &conversation.account == account
+                    && if name.eq_ignore_ascii_case(INBOX) {
+                        conversation.in_inbox
+                    } else {
+                        conversation
+                            .messages
+                            .iter()
+                            .any(|message| &message.mailbox == name)
+                    }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Message {
-    pub folder: Folder,
+    #[serde(default)]
+    pub mailbox: String,
     pub uid: u32,
     pub message_id: Option<String>,
     pub in_reply_to: Option<String>,
@@ -76,6 +122,12 @@ pub struct Message {
     pub html: bool,
 }
 
+impl Message {
+    pub fn in_inbox(&self) -> bool {
+        self.mailbox.eq_ignore_ascii_case(INBOX)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Conversation {
     pub key: String,
@@ -84,6 +136,7 @@ pub struct Conversation {
     pub members: Vec<Person>,
     pub messages: Vec<Message>,
     pub unread: usize,
+    pub in_inbox: bool,
 }
 
 impl Conversation {

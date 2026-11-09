@@ -40,8 +40,9 @@ reporting.
 
 Each account's password, in the system keyring (the Secret Service on Linux),
 never on disk by Zirbe itself. The account's address, name and servers, in
-`~/.config/zirbe/accounts.json`. The newest messages of each inbox and Sent
-folder, in `~/.cache/zirbe`, written readable by their owner only.
+`~/.config/zirbe/accounts.json`. The account's folder list, and the newest
+messages of its inbox, its Sent folder and each folder the user has opened, in
+`~/.cache/zirbe`, written readable by their owner only.
 
 ## Verifying releases
 

@@ -12,11 +12,15 @@ are the user's own mail servers.
 The store crate, `store/` (`zirbe-store`), is the mail engine behind
 `MailSource`: `imap.rs` (async-imap over tokio-rustls), `smtp.rs` (lettre),
 `mime.rs` and `content.rs` (mail-parser, html2text, quote folding), `email.rs`
-(a message's HTML for Email View, its embedded images inlined), `thread.rs`
+(a message's HTML for Email View, its embedded images inlined), `folders.rs`
+(the folder list: special-use roles, modified UTF-7 names, the order shown),
+`thread.rs`
 (grouping by the threading headers), `compose.rs` (reply recipients and the
 outgoing message), `secrets.rs` (keyring-core) and `cache.rs`. Its worker thread
 runs tokio, syncs on a timer, and publishes snapshots the window reads without
-waiting. The app crate is the window: `app.rs` lays it out, `list.rs` draws the
+waiting. Every sync lists each account's folders and fetches INBOX and Sent;
+another folder is fetched only while it is the one open, and stays cached
+after. The app crate is the window: `app.rs` lays it out, `list.rs` draws the
 conversation rows, `bubbles.rs` the messages and their attachment chips,
 `files.rs` opening and saving attachments, `signin.rs` the account form,
 `demo.rs` the sample conversations behind `--demo`, and `viewer.rs` the Email

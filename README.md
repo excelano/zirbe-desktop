@@ -14,7 +14,10 @@ servers you sign in to.
 
 ## What it does
 
-The window lists your conversations beside the one that is open. Mail you sent
+The window lists your conversations beside the one that is open. The list
+starts on All Inboxes, every account's inbox together, and the menu at its top
+switches to one account's folder instead; a conversation shows in each folder
+holding one of its messages, always as the whole thread. Mail you sent
 is read from the account's Sent folder and sits on the right, so a thread reads
 the same whichever program you answered it from. A reply goes to everyone in
 the conversation and carries the threading headers, so it stays in the thread
@@ -56,7 +59,8 @@ password in the desktop keyring under `service=zirbe`.
 ## Privacy
 
 Account settings, without the password, are kept in `~/.config/zirbe`, and the
-newest messages of each inbox and Sent folder in `~/.cache/zirbe`, readable only
+newest messages of each inbox, Sent folder and folder you have opened in
+`~/.cache/zirbe`, readable only
 by you. Messages are shown as text. Right-clicking a message offers Email View,
 which downloads that message again from your server and shows its full HTML in a
 separate window with scripts off and nothing loaded from the network; pictures

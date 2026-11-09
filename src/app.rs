@@ -8,7 +8,9 @@ use std::time::Duration;
 use eframe::egui::{
     self, Align, Frame, Key, Layout, Margin, Modifiers, RichText, ScrollArea, TextEdit, Ui,
 };
-use zirbe_store::{Account, Conversation, Draft, MailSource, Reply, Status, Store};
+use zirbe_store::{
+    Account, Conversation, Draft, FolderInfo, INBOX, MailSource, Reply, Role, Scope, Status, Store,
+};
 
 use crate::bubbles::{self, Action, Choice};
 use crate::dates;
@@ -120,6 +122,7 @@ pub struct App {
     fetching: Option<Fetching>,
     failure: Option<(String, String)>,
     pane: Pane,
+    scope: Scope,
     accounts_open: bool,
     adding_account: bool,
     sign_in: SignIn,
@@ -140,6 +143,7 @@ impl App {
             fetching: None,
             failure: None,
             pane: Pane::Conversation,
+            scope: Scope::AllInboxes,
             accounts_open: false,
             adding_account: false,
             sign_in: SignIn::default(),
@@ -269,13 +273,20 @@ impl App {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.add_space(14.0);
-                    ui.label(
-                        RichText::new("Conversations")
-                            .size(17.0)
-                            .strong()
-                            .color(palette.text),
-                    );
+                    ui.add_space(10.0);
+                    if let Some(scope) = self.switcher(ui)
+                        && scope != self.scope
+                    {
+                        self.source.mail().open(&scope);
+                        if self.selected.as_ref().is_some_and(|key| {
+                            !conversations.iter().any(|conversation| {
+                                &conversation.key == key && scope.holds(conversation)
+                            })
+                        }) {
+                            self.selected = None;
+                        }
+                        self.scope = scope;
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(10.0);
                         if ui.button("⚙").on_hover_text("Accounts").clicked() {
@@ -298,13 +309,27 @@ impl App {
                             .inner_margin(Margin::symmetric(14, 6)),
                     )
                     .show(ui, |ui| self.status(ui));
+                let shown: Vec<&Conversation> = conversations
+                    .iter()
+                    .filter(|conversation| self.scope.holds(conversation))
+                    .collect();
+                if shown.is_empty() {
+                    ui.add_space(24.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new("No conversations here")
+                                .size(13.0)
+                                .color(palette.secondary),
+                        );
+                    });
+                }
                 ScrollArea::vertical().auto_shrink(false).show_rows(
                     ui,
                     list::ROW_HEIGHT,
-                    conversations.len(),
+                    shown.len(),
                     |ui, range| {
                         let today = dates::today();
-                        for conversation in &conversations[range] {
+                        for conversation in &shown[range] {
                             let selected = matches!(self.pane, Pane::Conversation)
                                 && self.selected.as_deref() == Some(conversation.key.as_str());
                             if list::row(ui, conversation, selected, today, self.clock, &palette)
@@ -317,6 +342,106 @@ impl App {
                     },
                 );
             });
+    }
+
+    fn folders(&self, account: &Account) -> Vec<FolderInfo> {
+        let folders = self.source.mail().folders(&account.key());
+        if folders.is_empty() {
+            vec![FolderInfo {
+                name: INBOX.into(),
+                label: "Inbox".into(),
+                depth: 0,
+                role: Some(Role::Inbox),
+                selectable: true,
+                unread: 0,
+            }]
+        } else {
+            folders
+        }
+    }
+
+    fn scope_label(&self) -> String {
+        match &self.scope {
+            Scope::AllInboxes => "All Inboxes".into(),
+            Scope::Mailbox { account, name } => self
+                .account(account)
+                .and_then(|account| {
+                    self.folders(&account)
+                        .into_iter()
+                        .find(|folder| &folder.name == name)
+                })
+                .map_or_else(|| name.clone(), |folder| folder.label),
+        }
+    }
+
+    fn switcher(&self, ui: &mut Ui) -> Option<Scope> {
+        let palette = self.palette;
+        let accounts = self.source.mail().accounts();
+        let title = RichText::new(format!("{} ▾", self.scope_label()))
+            .size(17.0)
+            .strong()
+            .color(palette.text);
+        let mut chosen = None;
+        let response = ui.menu_button(title, |ui| {
+            ui.set_min_width(240.0);
+            let count = |unread: u32| {
+                if unread == 0 {
+                    String::new()
+                } else {
+                    unread.to_string()
+                }
+            };
+            let inboxes: u32 = accounts
+                .iter()
+                .filter_map(|account| {
+                    self.folders(account)
+                        .into_iter()
+                        .find(|folder| folder.role == Some(Role::Inbox))
+                })
+                .map(|folder| folder.unread)
+                .sum();
+            if ui
+                .add(
+                    egui::Button::selectable(self.scope == Scope::AllInboxes, "All Inboxes")
+                        .shortcut_text(count(inboxes)),
+                )
+                .clicked()
+            {
+                chosen = Some(Scope::AllInboxes);
+                ui.close();
+            }
+            for account in &accounts {
+                ui.separator();
+                ui.label(
+                    RichText::new(&account.address)
+                        .size(11.5)
+                        .color(palette.secondary),
+                );
+                for folder in self.folders(account) {
+                    let scope = Scope::Mailbox {
+                        account: account.key(),
+                        name: folder.name.clone(),
+                    };
+                    let label = format!("{}{}", "    ".repeat(folder.depth), folder.label);
+                    if !folder.selectable {
+                        ui.label(RichText::new(label).color(palette.secondary));
+                        continue;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::selectable(self.scope == scope, label)
+                                .shortcut_text(count(folder.unread)),
+                        )
+                        .clicked()
+                    {
+                        chosen = Some(scope);
+                        ui.close();
+                    }
+                }
+            }
+        });
+        response.response.on_hover_text("Choose a mailbox");
+        chosen
     }
 
     fn status(&mut self, ui: &mut Ui) {
@@ -746,6 +871,10 @@ impl App {
                 );
             });
         if let (Some(account), Source::Live(store)) = (sign_out, &self.source) {
+            if matches!(&self.scope, Scope::Mailbox { account: key, .. } if *key == account.key()) {
+                self.scope = Scope::AllInboxes;
+                self.selected = None;
+            }
             store.sign_out(&account);
         }
         self.accounts_open = open;
