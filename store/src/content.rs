@@ -52,9 +52,23 @@ pub(crate) fn attachment(raw: &[u8], index: usize, name: &str) -> Option<Vec<u8>
 }
 
 fn from_html(html: &str) -> String {
-    html2text::config::plain_no_decorate()
+    let text = html2text::config::plain_no_decorate()
+        .raw_mode(true)
         .string_from_read(html.as_bytes(), 10_000)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let mut kept: Vec<&str> = Vec::new();
+    for line in text.lines().map(str::trim_end) {
+        let rule = !line.is_empty()
+            && line
+                .chars()
+                .all(|c| matches!(c, '─' | '━' | '═' | '-' | '_' | ' '));
+        let blank = line.is_empty() || rule;
+        if blank && kept.last().is_none_or(|last| last.is_empty()) {
+            continue;
+        }
+        kept.push(if blank { "" } else { line });
+    }
+    kept.join("\n").trim().to_string()
 }
 
 pub(crate) fn reply_part(text: &str) -> String {
@@ -94,6 +108,12 @@ mod tests {
     use super::{attachment, attachment_names, reply_part};
 
     const WITH_FILES: &[u8] = b"From: a@example.com\r\nSubject: Files\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nTwo files.\r\n--x\r\nContent-Type: text/plain; name=notes.txt\r\nContent-Disposition: attachment; filename=notes.txt\r\n\r\nfirst\r\n--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=data.bin\r\nContent-Transfer-Encoding: base64\r\n\r\nAAEC\r\n--x--\r\n";
+
+    #[test]
+    fn reads_html_tables_and_rules_as_plain_lines() {
+        let html = "<table><tr><td>Form</td><td>Due</td></tr></table><hr><p>Done.</p>";
+        assert_eq!(super::from_html(html), "Form\nDue\n\nDone.");
+    }
 
     #[test]
     fn pulls_an_attachment_out_by_position_and_name() {

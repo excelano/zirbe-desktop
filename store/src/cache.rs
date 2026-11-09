@@ -18,9 +18,12 @@ pub(crate) struct Mailbox {
     pub messages: BTreeMap<u32, Message>,
 }
 
+const FORMAT: u32 = 1;
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct AccountData {
+    pub format: u32,
     pub inbox: Mailbox,
     pub sent: Option<Mailbox>,
     pub others: BTreeMap<String, Mailbox>,
@@ -79,14 +82,14 @@ pub(crate) fn save_accounts(path: &Path, accounts: &[Account]) -> Result<(), Str
 
 pub(crate) fn load_data(path: &Path) -> AccountData {
     let mut data: AccountData = read(path).unwrap_or_default();
-    let sent = data.sent_name().unwrap_or_default().to_string();
-    for mailbox in data.mailboxes_mut() {
-        for message in mailbox.messages.values_mut() {
-            if message.mailbox.is_empty() {
-                message.mailbox = mailbox.name.clone();
-            }
+    if data.format < FORMAT {
+        for mailbox in data.mailboxes_mut() {
+            mailbox.messages.clear();
+            mailbox.uid_validity = 0;
         }
+        data.format = FORMAT;
     }
+    let sent = data.sent_name().unwrap_or_default().to_string();
     for message in &mut data.unfiled {
         if message.mailbox.is_empty() {
             message.mailbox = sent.clone();
@@ -125,7 +128,7 @@ mod tests {
     use super::load_data;
 
     #[test]
-    fn files_messages_from_an_older_cache_under_their_mailbox() {
+    fn refetches_the_messages_of_an_older_cache_and_files_its_unsent_copies() {
         let message = |uid: u32| {
             format!(
                 r#"{{"folder":"Inbox","uid":{uid},"message_id":"<{uid}@x>","in_reply_to":null,"references":[],"from":null,"to":[],"cc":[],"subject":"Hi","date":"2026-11-09T12:00:00Z","text":"","attachments":[],"seen":true,"partial":false}}"#
@@ -142,12 +145,12 @@ mod tests {
         std::fs::write(&path, json).expect("a written cache");
         let data = load_data(&path);
         let _ = std::fs::remove_file(&path);
-        assert_eq!(data.inbox.messages[&1].mailbox, "INBOX");
-        assert_eq!(
-            data.sent.as_ref().expect("a sent mailbox").messages[&2].mailbox,
-            "INBOX.Sent"
-        );
+        assert!(data.inbox.messages.is_empty());
+        assert_eq!(data.inbox.uid_validity, 0);
+        let sent = data.sent.as_ref().expect("a sent mailbox");
+        assert_eq!(sent.name, "INBOX.Sent");
+        assert!(sent.messages.is_empty());
         assert_eq!(data.unfiled[0].mailbox, "INBOX.Sent");
-        assert!(data.others.is_empty());
+        assert_eq!(data.format, 1);
     }
 }

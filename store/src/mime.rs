@@ -267,4 +267,10 @@ Content-Type: text/html; charset=utf-8\r\n\
             Some("Grüße.pdf")
         );
     }
+
+    #[test]
+    fn decodes_a_japanese_encoded_subject() {
+        let raw = b"From: a@example.com\r\nSubject: =?ISO-2022-JP?B?WmlyYmUgGyRCIT0bKEIgRW1haWwgYXMgQ2hhdA==?=\r\n\r\nHi";
+        assert_eq!(whole(raw).subject, "Zirbe \u{2015} Email as Chat");
+    }
 }
