@@ -762,13 +762,15 @@ impl Worker {
             .iter()
             .map(|(account, data)| (account.clone(), data.blocked.iter().cloned().collect()))
             .collect();
-        *self.shared.published.write().expect("published lock") = Snapshot {
+        let mut published = self.shared.published.write().expect("published lock");
+        *published = Snapshot {
             accounts: self.accounts.clone(),
             conversations: self.shared.present(conversations),
             folders,
             locked: self.locked.clone(),
             blocked,
         };
+        drop(published);
         (self.shared.notify)();
     }
 
@@ -1081,11 +1083,13 @@ impl Worker {
         change: Change,
         targets: Vec<Target>,
     ) {
-        self.shared
-            .leaving
-            .lock()
-            .expect("leaving lock")
-            .retain(|(owner, key)| owner != account || !keys.contains(key));
+        if change.leaves() {
+            self.shared
+                .leaving
+                .lock()
+                .expect("leaving lock")
+                .retain(|(owner, key)| owner != account || !keys.contains(key));
+        }
         let Some(known) = self.account(account) else {
             return;
         };
