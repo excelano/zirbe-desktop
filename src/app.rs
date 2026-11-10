@@ -19,6 +19,7 @@ use crate::dates;
 use crate::demo::Demo;
 use crate::files;
 use crate::list;
+use crate::notify::Notifier;
 use crate::page::Page;
 use crate::palette::Palette;
 use crate::settings::Settings;
@@ -132,6 +133,7 @@ pub struct App {
     shown: Vec<String>,
     unread_only: bool,
     confirm_delete: Option<Vec<Conversation>>,
+    notifier: Option<Notifier>,
     auto_opened: Option<String>,
     adding_account: bool,
     sign_in: SignIn,
@@ -161,6 +163,7 @@ impl App {
             shown: Vec::new(),
             unread_only: false,
             confirm_delete: None,
+            notifier: None,
             auto_opened: None,
             adding_account: false,
             sign_in: SignIn::default(),
@@ -384,6 +387,46 @@ impl App {
                     self.apply(targets, change);
                 }
             });
+    }
+
+    fn news(&mut self, ctx: &egui::Context, conversations: &[Conversation]) {
+        let notifier = self.notifier.get_or_insert_with(|| Notifier::new(ctx));
+        let arrivals = self.source.mail().arrivals();
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(false));
+        if self.settings.notify && !focused && !arrivals.is_empty() {
+            notifier.post(&arrivals);
+        }
+        let unread: u32 = self
+            .source
+            .mail()
+            .accounts()
+            .iter()
+            .flat_map(|account| self.source.mail().folders(&account.key()))
+            .filter(|folder| folder.role == Some(Role::Inbox))
+            .map(|folder| folder.unread)
+            .sum();
+        notifier.badge(unread);
+        let Some(target) = notifier.clicked() else {
+            return;
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        let found = target.and_then(|id| {
+            conversations.iter().find(|conversation| {
+                conversation
+                    .copies
+                    .iter()
+                    .any(|copy| copy.message_id.as_ref() == Some(&id))
+            })
+        });
+        if let Some(conversation) = found {
+            if !self.scope.holds(conversation) {
+                self.scope = Scope::AllInboxes;
+                self.source.mail().open(&self.scope);
+            }
+            self.selected = Some(conversation.key.clone());
+            self.picked.clear();
+            self.pane = Pane::Conversation;
+        }
     }
 
     fn pick(&mut self, key: &str, modifiers: Modifiers) {
@@ -1367,6 +1410,7 @@ impl App {
                 ui.label(RichText::new("Reading").strong().color(palette.text));
                 ui.checkbox(&mut settings.open_html, "Open HTML email in Email View");
                 ui.checkbox(&mut settings.load_images, "Load remote images");
+                ui.checkbox(&mut settings.notify, "New mail notifications");
                 ui.label(
                     RichText::new("Zirbe shows the plain-text version as a chat bubble by default. Email View shows the message as the sender laid it out. Loading remote images can let a sender know you opened the message and roughly where you are, so it stays off unless you turn it on.")
                         .size(11.0)
@@ -1476,6 +1520,7 @@ impl eframe::App for App {
             return;
         }
         let conversations = self.source.mail().conversations();
+        self.news(&ctx, &conversations);
         self.keys(&ctx, &conversations);
         self.sidebar(ui, &conversations);
         match self.pane {

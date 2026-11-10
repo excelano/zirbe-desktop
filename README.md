@@ -23,7 +23,12 @@ read or unread from the buttons above it, from its right-click menu, or with
 E for Archive, Delete for Trash and Shift+U for read or unread; Ctrl-click and
 Shift-click pick several at once, and Unread at the foot of the list hides the
 ones already read. Archive makes an Archive folder if the account has none, and
-Delete inside Trash removes for good after asking. Mail you sent
+Delete inside Trash removes for good after asking. New mail in an inbox shows
+within seconds, and while Zirbe is open but not in front it posts a
+notification for each new message, which opens the conversation when clicked;
+Settings can turn the notifications off. If the copy of a sent message cannot be
+saved to the server's Sent folder, the status line says so and Zirbe keeps
+trying at every check for mail. Mail you sent
 is read from the account's Sent folder and sits on the right, so a thread reads
 the same whichever program you answered it from. A reply goes to everyone in
 the conversation and carries the threading headers, so it stays in the thread

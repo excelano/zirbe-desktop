@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_imap::extensions::idle::IdleResponse;
 use async_imap::imap_proto::{MessageSection, SectionPath};
 use async_imap::types::{Fetch, Flag, NameAttribute};
 use async_imap::{Client, Session};
@@ -156,7 +157,7 @@ impl Connection {
         Ok(folders)
     }
 
-    pub async fn sync(&mut self, host: &str, mailbox: &mut Mailbox) -> Result<(), String> {
+    pub async fn sync(&mut self, host: &str, mailbox: &mut Mailbox) -> Result<Vec<u32>, String> {
         let selected = self
             .session
             .select(&mailbox.name)
@@ -167,9 +168,10 @@ impl Connection {
             mailbox.messages.clear();
             mailbox.uid_validity = validity;
         }
+        let known = !mailbox.messages.is_empty();
         if selected.exists == 0 {
             mailbox.messages.clear();
-            return Ok(());
+            return Ok(Vec::new());
         }
         let first = selected.exists.saturating_sub(WINDOW - 1).max(1);
         let present: Vec<(u32, (bool, bool), u32)> = self
@@ -216,7 +218,31 @@ impl Connection {
             )
             .await?;
         }
-        Ok(())
+        if !known {
+            return Ok(Vec::new());
+        }
+        Ok(whole.into_iter().chain(large).collect())
+    }
+
+    pub async fn watch(
+        mut self,
+        host: &str,
+        mailbox: &str,
+        patience: Duration,
+    ) -> Result<(Connection, u32, bool), String> {
+        let selected = self.session.select(mailbox).await.map_err(failed(host))?;
+        let mut idle = self.session.idle();
+        idle.init().await.map_err(failed(host))?;
+        let response = {
+            let (wait, _stop) = idle.wait_with_timeout(patience);
+            wait.await.map_err(failed(host))?
+        };
+        let session = idle.done().await.map_err(failed(host))?;
+        Ok((
+            Connection { session },
+            selected.exists,
+            matches!(response, IdleResponse::NewData(_)),
+        ))
     }
 
     async fn fetch_into(

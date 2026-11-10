@@ -20,7 +20,7 @@ mod thread;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock, mpsc as reply};
+use std::sync::{Arc, Mutex, RwLock, mpsc as reply};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -28,16 +28,22 @@ use tokio::sync::mpsc;
 
 pub use compose::{parse_people, reply};
 pub use model::{
-    Account, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Message, Person, Role, Scope,
-    Status,
+    Account, Arrival, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Message, Person, Role,
+    Scope, Status,
 };
 pub use presets::{Preset, for_address};
 
-use cache::{AccountData, Mailbox};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use cache::{AccountData, Mailbox, UnsentCopy};
 use imap::Connection;
 use mime::{Body, Fetched};
 
 const SYNC_EVERY: Duration = Duration::from_secs(120);
+// Short enough that a server never parks the idling connection, which on
+// cPanel's Dovecot stops new-mail notices after about thirty seconds.
+const WATCH_PATIENCE: Duration = Duration::from_secs(25);
+const WATCH_RETRY: Duration = Duration::from_secs(60);
 
 pub type Reply<T = ()> = reply::Receiver<Result<T, String>>;
 
@@ -52,6 +58,7 @@ pub trait MailSource {
     fn send(&self, draft: Draft) -> Reply;
     fn mark_read(&self, conversation: &Conversation);
     fn change(&self, conversations: &[Conversation], scope: &Scope, change: Change);
+    fn arrivals(&self) -> Vec<Arrival>;
     fn refresh(&self);
     fn email(&self, account: &str, message: &Message) -> Reply<String>;
     fn attachment(&self, account: &str, message: &Message, index: usize) -> Reply<Vec<u8>>;
@@ -65,6 +72,7 @@ pub struct Store {
 struct Shared {
     published: RwLock<Snapshot>,
     status: RwLock<Status>,
+    arrivals: Mutex<Vec<Arrival>>,
     notify: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -77,6 +85,7 @@ struct Snapshot {
 
 enum Command {
     Refresh,
+    Arrived(String),
     Open(Scope),
     SignIn {
         account: Account,
@@ -122,6 +131,7 @@ impl Store {
         let shared = Arc::new(Shared {
             published: RwLock::new(Snapshot::default()),
             status: RwLock::new(Status::Syncing),
+            arrivals: Mutex::new(Vec::new()),
             notify: Box::new(notify),
         });
         let (commands, receiver) = mpsc::unbounded_channel();
@@ -132,6 +142,8 @@ impl Store {
             accounts: Vec::new(),
             data: HashMap::new(),
             open: Scope::AllInboxes,
+            own: commands.clone(),
+            watchers: HashMap::new(),
         };
         std::thread::Builder::new()
             .name("mail sync".into())
@@ -212,6 +224,10 @@ impl MailSource for Store {
         let _ = self.commands.send(Command::Open(scope.clone()));
     }
 
+    fn arrivals(&self) -> Vec<Arrival> {
+        std::mem::take(&mut *self.shared.arrivals.lock().expect("arrivals lock"))
+    }
+
     fn mark_read(&self, conversation: &Conversation) {
         self.change(
             std::slice::from_ref(conversation),
@@ -288,6 +304,8 @@ struct Worker {
     accounts: Vec<Account>,
     data: HashMap<String, AccountData>,
     open: Scope,
+    own: mpsc::UnboundedSender<Command>,
+    watchers: HashMap<String, tokio::task::JoinHandle<()>>,
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
@@ -309,15 +327,55 @@ impl Worker {
             self.data.insert(account.key(), data);
         }
         self.publish();
-        self.sync().await;
+        for account in self.accounts.clone() {
+            self.watch(account);
+        }
+        let mut ticker = tokio::time::interval(SYNC_EVERY);
         loop {
             tokio::select! {
                 command = commands.recv() => match command {
                     None => return,
                     Some(command) => self.handle(command).await,
                 },
-                () = tokio::time::sleep(SYNC_EVERY) => self.sync().await,
+                _ = ticker.tick() => self.sync().await,
             }
+        }
+    }
+
+    fn watch(&mut self, account: Account) {
+        let own = self.own.clone();
+        let key = account.key();
+        let watcher = tokio::spawn(async move {
+            let host = account.imap_host.trim().to_string();
+            loop {
+                let key = account.key();
+                let opened = match blocking(move || secrets::password(&key)).await {
+                    Ok(password) => Connection::open(&account, &password).await,
+                    Err(error) => Err(error),
+                };
+                let Ok(mut connection) = opened else {
+                    tokio::time::sleep(WATCH_RETRY).await;
+                    continue;
+                };
+                let mut known = None;
+                while let Ok((next, exists, news)) =
+                    connection.watch(&host, INBOX, WATCH_PATIENCE).await
+                {
+                    connection = next;
+                    let changed = news || known.is_some_and(|known| known != exists);
+                    known = Some(exists);
+                    if changed {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        if own.send(Command::Arrived(account.key())).is_err() {
+                            return;
+                        }
+                    }
+                }
+                tokio::time::sleep(WATCH_RETRY).await;
+            }
+        });
+        if let Some(previous) = self.watchers.insert(key, watcher) {
+            previous.abort();
         }
     }
 
@@ -328,6 +386,11 @@ impl Worker {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::Refresh => self.sync().await,
+            Command::Arrived(account) => {
+                if let Some(known) = self.account(&account) {
+                    self.sync_accounts(vec![known]).await;
+                }
+            }
             Command::Open(scope) => {
                 self.open = scope;
                 if let Scope::Mailbox { account, .. } = &self.open
@@ -341,14 +404,19 @@ impl Worker {
                 password,
                 reply,
             } => {
+                let added = account.clone();
                 let result = self.sign_in(account, password).await;
                 let succeeded = result.is_ok();
                 let _ = reply.send(result);
                 if succeeded {
+                    self.watch(added);
                     self.sync().await;
                 }
             }
             Command::SignOut { account } => {
+                if let Some(watcher) = self.watchers.remove(&account) {
+                    watcher.abort();
+                }
                 let key = account.clone();
                 let _ = blocking(move || secrets::forget(&key)).await;
                 self.accounts.retain(|known| known.key() != account);
@@ -533,7 +601,31 @@ impl Worker {
             data.others
                 .retain(|name, _| folders.iter().any(|folder| &folder.name == name));
             data.folders = folders;
-            connection.sync(&host, &mut data.inbox).await?;
+            let arrived = connection.sync(&host, &mut data.inbox).await?;
+            let me = account.address.trim();
+            let mut fresh: Vec<Arrival> = arrived
+                .iter()
+                .filter_map(|uid| data.inbox.messages.get(uid))
+                .filter(|message| !message.seen)
+                .filter(|message| message.from.as_ref().is_none_or(|from| !from.is(me)))
+                .map(|message| Arrival {
+                    account: account.key(),
+                    message_id: message.message_id.clone(),
+                    sender: message
+                        .from
+                        .as_ref()
+                        .map_or("Someone".into(), |from| from.display().to_string()),
+                    subject: message.subject.clone(),
+                    text: message.text.chars().take(200).collect(),
+                })
+                .collect();
+            if !fresh.is_empty() {
+                self.shared
+                    .arrivals
+                    .lock()
+                    .expect("arrivals lock")
+                    .append(&mut fresh);
+            }
             if let Some(sent) = data.sent.as_mut() {
                 connection.sync(&host, sent).await?;
             }
@@ -571,9 +663,32 @@ impl Worker {
                 .as_ref()
                 .is_none_or(|id| !filed.contains(id))
         });
+        data.unsent.retain(|copy| !filed.contains(&copy.message_id));
+        let mut unsaved = None;
+        if result.is_ok() && !data.unsent.is_empty() {
+            match data.sent_name().map(str::to_string) {
+                None => unsaved = Some("this account has no Sent folder".to_string()),
+                Some(sent) => {
+                    let mut kept = Vec::new();
+                    for copy in std::mem::take(&mut data.unsent) {
+                        let raw = STANDARD.decode(&copy.raw).unwrap_or_default();
+                        if let Err(error) = connection.append(&host, &sent, &raw).await {
+                            unsaved = Some(error);
+                            kept.push(copy);
+                        }
+                    }
+                    data.unsent = kept;
+                }
+            }
+        }
         self.data.insert(account.key(), data);
         connection.close().await;
-        result
+        result.and(match unsaved {
+            Some(error) => Err(format!(
+                "a sent message's copy for the Sent folder is still not saved ({error}); Zirbe will try again"
+            )),
+            None => Ok(()),
+        })
     }
 
     async fn send(&mut self, draft: Draft, reply: reply::Sender<Result<(), String>>) {
@@ -615,20 +730,41 @@ impl Worker {
         });
         if let Some(data) = self.data.get_mut(&account.key()) {
             if draft.in_reply_to.is_none() {
-                data.started.insert(id);
+                data.started.insert(id.clone());
             }
             data.unfiled.extend(local);
+            data.unsent.push(UnsentCopy {
+                message_id: id.clone(),
+                raw: STANDARD.encode(&raw),
+            });
         }
         self.save_data(&account.key());
         self.publish();
         let _ = reply.send(Ok(()));
-        if let Some(name) = sent_name
-            && let Ok(mut connection) = Connection::open(&account, &password).await
-        {
-            let _ = connection
-                .append(account.imap_host.trim(), &name, &raw)
-                .await;
-            connection.close().await;
+        let saved = match sent_name {
+            None => Err("this account has no Sent folder".to_string()),
+            Some(name) => match Connection::open(&account, &password).await {
+                Ok(mut connection) => {
+                    let appended = connection
+                        .append(account.imap_host.trim(), &name, &raw)
+                        .await;
+                    connection.close().await;
+                    appended
+                }
+                Err(error) => Err(error),
+            },
+        };
+        match saved {
+            Ok(()) => {
+                if let Some(data) = self.data.get_mut(&account.key()) {
+                    data.unsent.retain(|copy| copy.message_id != id);
+                }
+                self.save_data(&account.key());
+            }
+            Err(error) => self.set_status(Status::Failed(format!(
+                "{}: sent, but the copy for the Sent folder was not saved ({error}); Zirbe will try again",
+                account.address
+            ))),
         }
     }
 

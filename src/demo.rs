@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use chrono::{DateTime, Duration, Local, NaiveTime, TimeZone, Utc};
 use zirbe_store::{
-    Account, Change, Conversation, Copy, Draft, FolderInfo, MailSource, Message, Person, Reply,
-    Role, Scope, Status,
+    Account, Arrival, Change, Conversation, Copy, Draft, FolderInfo, MailSource, Message, Person,
+    Reply, Role, Scope, Status,
 };
 
 const ME: &str = "sam@example.com";
@@ -423,6 +423,10 @@ impl MailSource for Demo {
     }
 
     fn refresh(&self) {}
+
+    fn arrivals(&self) -> Vec<Arrival> {
+        Vec::new()
+    }
 
     fn attachment(&self, _account: &str, message: &Message, index: usize) -> Reply<Vec<u8>> {
         let name = message.attachments.get(index).cloned().unwrap_or_default();

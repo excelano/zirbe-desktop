@@ -5,11 +5,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub open_html: bool,
     pub load_images: bool,
+    pub notify: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings {
+            open_html: false,
+            load_images: false,
+            notify: true,
+        }
+    }
 }
 
 impl Settings {

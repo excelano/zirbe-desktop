@@ -215,3 +215,12 @@ pub struct Draft {
     pub in_reply_to: Option<String>,
     pub references: Vec<String>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arrival {
+    pub account: String,
+    pub message_id: Option<String>,
+    pub sender: String,
+    pub subject: String,
+    pub text: String,
+}

@@ -31,6 +31,13 @@ pub(crate) struct AccountData {
     pub unfiled: Vec<Message>,
     pub started: BTreeSet<String>,
     pub pinned: BTreeSet<String>,
+    pub unsent: Vec<UnsentCopy>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct UnsentCopy {
+    pub message_id: String,
+    pub raw: String,
 }
 
 impl AccountData {

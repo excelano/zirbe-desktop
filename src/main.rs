@@ -10,6 +10,7 @@ mod dates;
 mod demo;
 mod files;
 mod list;
+mod notify;
 mod page;
 mod palette;
 mod paths;

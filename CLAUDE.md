@@ -21,9 +21,15 @@ outgoing message), `secrets.rs` (keyring-core) and `cache.rs`. Its worker thread
 runs tokio, syncs on a timer, and publishes snapshots the window reads without
 waiting. Every sync lists each account's folders and fetches INBOX and Sent;
 another folder is fetched only while it is the one open, and stays cached
-after. The app crate is the window: `app.rs` lays it out, `list.rs` draws the
+after. Besides the two-minute timer, a task per account holds INBOX in IMAP
+IDLE in 25-second rounds and asks for that account's sync when the server
+reports a change or the message count moves; new unread mail from others found
+by a sync is queued for the window as arrivals. A sent message's raw text stays
+in the cache until its copy is seen in the Sent folder, and every sync retries
+saving it there. The app crate is the window: `app.rs` lays it out, `list.rs` draws the
 conversation rows, `bubbles.rs` the messages and their attachment chips,
-`files.rs` opening and saving attachments, `signin.rs` the account form,
+`files.rs` opening and saving attachments, `notify.rs` new-mail notifications
+and the launcher's unread count over the session bus, `signin.rs` the account form,
 `demo.rs` the sample conversations behind `--demo`, and `page.rs` the Email
 View: Blitz (`blitz-html`, pinned to an exact beta) lays out and paints a
 message's HTML on its own thread into tiles the reading pane draws, and its
