@@ -11,12 +11,27 @@ pub(crate) fn text_of(message: &mail_parser::Message<'_>) -> String {
             .next()
             .is_some_and(|part| part.is_content_type("text", "html"))
     {
-        return text.into_owned();
+        if !markup(&text) {
+            return text.into_owned();
+        }
+        if !has_html(message) {
+            return from_html(&text);
+        }
     }
     if let Some(html) = message.body_html(0) {
         return from_html(&html);
     }
     String::new()
+}
+
+fn markup(text: &str) -> bool {
+    let start: String = text
+        .trim_start()
+        .chars()
+        .take(512)
+        .collect::<String>()
+        .to_lowercase();
+    start.starts_with("<!doctype html") || start.starts_with("<html") || start.contains("<body")
 }
 
 pub(crate) fn has_html(message: &mail_parser::Message<'_>) -> bool {
@@ -108,6 +123,15 @@ mod tests {
     use super::{attachment, attachment_names, reply_part};
 
     const WITH_FILES: &[u8] = b"From: a@example.com\r\nSubject: Files\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nTwo files.\r\n--x\r\nContent-Type: text/plain; name=notes.txt\r\nContent-Disposition: attachment; filename=notes.txt\r\n\r\nfirst\r\n--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=data.bin\r\nContent-Transfer-Encoding: base64\r\n\r\nAAEC\r\n--x--\r\n";
+
+    #[test]
+    fn reads_a_plain_part_that_holds_html_as_html() {
+        let raw = b"From: a@example.com\r\nSubject: News\r\nContent-Type: text/plain\r\n\r\n<html><head><meta charset=utf-8></head><body><p>Week <b>ahead</b></p></body></html>";
+        let message = mail_parser::MessageParser::default()
+            .parse(raw)
+            .expect("a message");
+        assert_eq!(super::text_of(&message), "Week ahead");
+    }
 
     #[test]
     fn reads_html_tables_and_rules_as_plain_lines() {
