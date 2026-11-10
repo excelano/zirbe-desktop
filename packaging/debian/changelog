@@ -1,3 +1,10 @@
+zirbe (0.8.0) unstable; urgency=medium
+
+  * Email View is now called Web View
+  * Arrow keys through the list, Select All, Mark All as Read, a filter for read, format, sender, flags and attachments, Empty Trash and Junk, and Trash All from a sender
+
+ -- David M. Anderson <david.anderson@excelano.com>  Tue, 10 Nov 2026 11:46:29 -0600
+
 zirbe (0.7.3) unstable; urgency=medium
 
   * A conversation trashed right after it was opened no longer reappears before it leaves
