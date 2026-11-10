@@ -1,3 +1,11 @@
+zirbe (0.2.0) unstable; urgency=medium
+
+  * Archive, trash, move, flag, pin and mark conversations, one or several
+  * Read a plain-text part that holds HTML as HTML
+  * Open Email View from the bubble and add reading settings
+
+ -- David M. Anderson <david.anderson@excelano.com>  Mon, 09 Nov 2026 18:02:41 -0600
+
 zirbe (0.1.3) unstable; urgency=medium
 
   * Show Email View in the reading pane
