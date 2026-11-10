@@ -1,3 +1,9 @@
+zirbe (0.7.3) unstable; urgency=medium
+
+  * A conversation trashed right after it was opened no longer reappears before it leaves
+
+ -- David M. Anderson <david.anderson@excelano.com>  Tue, 10 Nov 2026 10:46:15 -0600
+
 zirbe (0.7.2) unstable; urgency=medium
 
   * A trashed, archived or moved conversation leaves the list at once, even while a sync is running
