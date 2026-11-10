@@ -1,3 +1,9 @@
+zirbe (0.7.0) unstable; urgency=medium
+
+  * Account labels and colours, Sign In Again, blocked senders, preview lines
+
+ -- David M. Anderson <david.anderson@excelano.com>  Mon, 09 Nov 2026 19:17:02 -0600
+
 zirbe (0.6.0) unstable; urgency=medium
 
   * Inline images, invitation cards and reactions
