@@ -428,6 +428,24 @@ impl MailSource for Demo {
         Vec::new()
     }
 
+    fn original(&self, _account: &str, message: &Message) -> Reply<zirbe_store::Original> {
+        let (reply, receiver) = mpsc::channel();
+        let _ = reply.send(Ok(zirbe_store::Original {
+            text: format!(
+                "{}\n\nOn an earlier day, someone wrote:\n> An earlier message.",
+                message.text
+            ),
+            attachments: Vec::new(),
+        }));
+        receiver
+    }
+
+    fn save_draft(&self, _draft: Draft) -> Reply {
+        let (reply, receiver) = mpsc::channel();
+        let _ = reply.send(Ok(()));
+        receiver
+    }
+
     fn search_server(&self, _scope: &Scope, _text: &str) -> Reply<usize> {
         let (reply, receiver) = mpsc::channel();
         let _ = reply.send(Ok(0));

@@ -4,12 +4,17 @@
 use std::collections::HashSet;
 
 use lettre::message::header::ContentType;
-use lettre::message::{Mailbox, Mailboxes};
+use lettre::message::{Attachment, Mailbox, Mailboxes, MultiPart, SinglePart};
 
-use crate::model::{Account, Conversation, Draft, Person};
+use crate::model::{Account, Conversation, Draft, Message, Person};
 use crate::subject;
 
-pub fn reply(conversation: &Conversation, account: &Account, body: String) -> Draft {
+pub fn reply(
+    conversation: &Conversation,
+    account: &Account,
+    body: String,
+    target: Option<&Message>,
+) -> Draft {
     let mut draft = Draft {
         account: account.key(),
         body,
@@ -18,7 +23,7 @@ pub fn reply(conversation: &Conversation, account: &Account, body: String) -> Dr
             .to_string(),
         ..Draft::default()
     };
-    let Some(latest) = conversation.last() else {
+    let Some(latest) = target.or(conversation.last()) else {
         return draft;
     };
     let mut placed: HashSet<String> = HashSet::from([account.key()]);
@@ -90,9 +95,24 @@ fn mailboxes(people: &[Person]) -> Result<Option<Mailboxes>, String> {
 }
 
 pub(crate) fn build(draft: &Draft, account: &Account) -> Result<(lettre::Message, String), String> {
-    if draft.to.is_empty() && draft.cc.is_empty() {
+    if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
         return Err("Add someone to send this to.".into());
     }
+    assemble(draft, account, None)
+}
+
+pub(crate) fn unsent(draft: &Draft, account: &Account) -> Result<Vec<u8>, String> {
+    let me = mailbox(&account.me())?;
+    let envelope = lettre::address::Envelope::new(Some(me.email.clone()), vec![me.email])
+        .map_err(|error| error.to_string())?;
+    Ok(assemble(draft, account, Some(envelope))?.0.formatted())
+}
+
+fn assemble(
+    draft: &Draft,
+    account: &Account,
+    envelope: Option<lettre::address::Envelope>,
+) -> Result<(lettre::Message, String), String> {
     let domain = account
         .key()
         .rsplit_once('@')
@@ -103,11 +123,17 @@ pub(crate) fn build(draft: &Draft, account: &Account) -> Result<(lettre::Message
         .subject(draft.subject.trim())
         .message_id(Some(id.clone()))
         .date_now();
+    if let Some(envelope) = envelope {
+        builder = builder.envelope(envelope);
+    }
     if let Some(to) = mailboxes(&draft.to)? {
         builder = builder.mailbox(lettre::message::header::To::from(to));
     }
     if let Some(cc) = mailboxes(&draft.cc)? {
         builder = builder.mailbox(lettre::message::header::Cc::from(cc));
+    }
+    if let Some(bcc) = mailboxes(&draft.bcc)? {
+        builder = builder.mailbox(lettre::message::header::Bcc::from(bcc));
     }
     if let Some(parent) = &draft.in_reply_to {
         builder = builder.in_reply_to(parent.clone());
@@ -115,16 +141,59 @@ pub(crate) fn build(draft: &Draft, account: &Account) -> Result<(lettre::Message
     if !draft.references.is_empty() {
         builder = builder.references(draft.references.join(" "));
     }
-    let message = builder
-        .header(ContentType::TEXT_PLAIN)
-        .body(draft.body.replace("\r\n", "\n"))
-        .map_err(|error| format!("the message could not be built: {error}"))?;
+    let text = draft.body.replace("\r\n", "\n");
+    let built = if draft.attachments.is_empty() {
+        builder.header(ContentType::TEXT_PLAIN).body(text)
+    } else {
+        let mut parts = MultiPart::mixed().singlepart(SinglePart::plain(text));
+        for file in &draft.attachments {
+            let kind = ContentType::parse(content_type(&file.name))
+                .unwrap_or(ContentType::parse("application/octet-stream").expect("a content type"));
+            parts =
+                parts.singlepart(Attachment::new(file.name.clone()).body(file.bytes.clone(), kind));
+        }
+        builder.multipart(parts)
+    };
+    let message = built.map_err(|error| format!("the message could not be built: {error}"))?;
     Ok((message, id))
+}
+
+fn content_type(name: &str) -> &'static str {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "txt" | "text" => "text/plain",
+        "csv" => "text/csv",
+        "htm" | "html" => "text/html",
+        "ics" => "text/calendar",
+        "zip" => "application/zip",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "mp4" => "video/mp4",
+        _ => "application/octet-stream",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Outgoing;
     use crate::thread::tests::message;
 
     fn account() -> Account {
@@ -168,7 +237,7 @@ mod tests {
             name: None,
             address: "cy@example.com".into(),
         });
-        let draft = reply(&conversation(vec![latest]), &account(), "Yes".into());
+        let draft = reply(&conversation(vec![latest]), &account(), "Yes".into(), None);
         let to: Vec<_> = draft.to.iter().map(|p| p.address.as_str()).collect();
         let cc: Vec<_> = draft.cc.iter().map(|p| p.address.as_str()).collect();
         assert_eq!(to, ["ana@example.com", "ben@example.com"]);
@@ -186,7 +255,7 @@ mod tests {
             name: None,
             address: "ana@example.com".into(),
         }];
-        let draft = reply(&conversation(vec![mine]), &account(), String::new());
+        let draft = reply(&conversation(vec![mine]), &account(), String::new(), None);
         assert_eq!(draft.to.len(), 1);
         assert_eq!(draft.to[0].address, "ana@example.com");
     }
@@ -215,5 +284,39 @@ mod tests {
     fn refuses_a_message_to_nobody_and_a_bad_address() {
         assert!(build(&Draft::default(), &account()).is_err());
         assert!(parse_people("ana@example.com, not an address").is_err());
+    }
+
+    #[test]
+    fn keeps_bcc_out_of_the_headers_and_attaches_files() {
+        let draft = Draft {
+            account: "me@example.org".into(),
+            to: vec![Person {
+                name: None,
+                address: "ana@example.com".into(),
+            }],
+            bcc: vec![Person {
+                name: None,
+                address: "secret@example.com".into(),
+            }],
+            subject: "Files".into(),
+            body: "Here.".into(),
+            attachments: vec![Outgoing {
+                name: "notes.txt".into(),
+                bytes: b"first".to_vec(),
+            }],
+            ..Draft::default()
+        };
+        let (message, _) = build(&draft, &account()).expect("a message");
+        let envelope: Vec<String> = message
+            .envelope()
+            .to()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(envelope.contains(&"secret@example.com".to_string()));
+        let raw = String::from_utf8(message.formatted()).expect("text");
+        assert!(!raw.to_ascii_lowercase().contains("bcc:"), "{raw}");
+        assert!(raw.contains("multipart/mixed"));
+        assert!(raw.contains("filename=\"notes.txt\""), "{raw}");
     }
 }

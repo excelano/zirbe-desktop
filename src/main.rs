@@ -6,6 +6,7 @@
 
 mod app;
 mod bubbles;
+mod composer;
 mod dates;
 mod demo;
 mod files;
@@ -14,6 +15,7 @@ mod notify;
 mod page;
 mod palette;
 mod paths;
+mod people;
 #[cfg(feature = "screenshot")]
 mod screenshot;
 mod settings;

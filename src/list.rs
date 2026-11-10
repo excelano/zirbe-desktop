@@ -12,11 +12,20 @@ use crate::system::Clock;
 pub const ROW_HEIGHT: f32 = 72.0;
 const AVATAR: f32 = 40.0;
 
-pub fn title(conversation: &Conversation) -> &str {
-    if conversation.title.is_empty() {
-        "No Subject"
-    } else {
-        &conversation.title
+pub fn title(conversation: &Conversation) -> String {
+    if !conversation.title.is_empty() {
+        return conversation.title.clone();
+    }
+    match conversation.members.as_slice() {
+        [] => "Chat".into(),
+        members => format!(
+            "Chat with {}",
+            members
+                .iter()
+                .map(Person::short)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -147,7 +156,7 @@ pub fn row(
             .galley(pos2(left, rect.top() + top), galley, color);
     };
     line(
-        title(conversation).to_string(),
+        title(conversation),
         14.5,
         palette.text,
         10.0,

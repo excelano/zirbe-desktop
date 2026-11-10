@@ -31,7 +31,16 @@ Settings can turn the notifications off. The search field above the list
 people and messages, ignoring case and accents, and can then ask the server for
 older matches in the folder being shown, which Zirbe keeps once found; Find in
 Conversation (Ctrl+Shift+F) steps through the messages of one conversation that
-match. If the copy of a sent message cannot be
+match. Right-clicking a message replies to that message alone, forwards it with
+its attachments, copies its text, or shows the quoted history Zirbe folds away.
+Above the reply box are the people a reply reaches, any of whom can be left out
+of it, and files can be attached with the paperclip or by dropping them on the
+window. A new conversation has Cc and Bcc, takes its name from its people when
+it has no subject, suggests addresses from the mail already synced, and can be
+saved to the server's Drafts folder instead of sent; opening a draft from the
+Drafts folder brings it back to finish. A reply that fails to send keeps a
+Retry button, and a note between messages says when someone joins or leaves the
+conversation. If the copy of a sent message cannot be
 saved to the server's Sent folder, the status line says so and Zirbe keeps
 trying at every check for mail. Mail you sent
 is read from the account's Sent folder and sits on the right, so a thread reads

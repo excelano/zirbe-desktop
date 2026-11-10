@@ -29,11 +29,12 @@ use tokio::sync::mpsc;
 
 pub use compose::{parse_people, reply};
 pub use model::{
-    Account, Arrival, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Message, Person, Role,
-    Scope, Status,
+    Account, Arrival, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Message, Original,
+    Outgoing, Person, Role, Scope, Status,
 };
 pub use presets::{Preset, for_address};
 pub use search::Query;
+pub use subject::normalize as subject_of;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -62,6 +63,8 @@ pub trait MailSource {
     fn change(&self, conversations: &[Conversation], scope: &Scope, change: Change);
     fn arrivals(&self) -> Vec<Arrival>;
     fn search_server(&self, scope: &Scope, text: &str) -> Reply<usize>;
+    fn original(&self, account: &str, message: &Message) -> Reply<Original>;
+    fn save_draft(&self, draft: Draft) -> Reply;
     fn refresh(&self);
     fn email(&self, account: &str, message: &Message) -> Reply<String>;
     fn attachment(&self, account: &str, message: &Message, index: usize) -> Reply<Vec<u8>>;
@@ -88,6 +91,16 @@ struct Snapshot {
 
 enum Command {
     Refresh,
+    Original {
+        account: String,
+        mailbox: String,
+        uid: u32,
+        reply: reply::Sender<Result<Original, String>>,
+    },
+    SaveDraft {
+        draft: Draft,
+        reply: reply::Sender<Result<(), String>>,
+    },
     SearchServer {
         places: Vec<(String, String)>,
         terms: Vec<String>,
@@ -246,6 +259,26 @@ impl MailSource for Store {
         let _ = self.commands.send(Command::SearchServer {
             places,
             terms,
+            reply: sender,
+        });
+        receiver
+    }
+
+    fn original(&self, account: &str, message: &Message) -> Reply<Original> {
+        let (sender, receiver) = reply::channel();
+        let _ = self.commands.send(Command::Original {
+            account: account.to_string(),
+            mailbox: message.mailbox.clone(),
+            uid: message.uid,
+            reply: sender,
+        });
+        receiver
+    }
+
+    fn save_draft(&self, draft: Draft) -> Reply {
+        let (sender, receiver) = reply::channel();
+        let _ = self.commands.send(Command::SaveDraft {
+            draft,
             reply: sender,
         });
         receiver
@@ -413,6 +446,24 @@ impl Worker {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::Refresh => self.sync().await,
+            Command::Original {
+                account,
+                mailbox,
+                uid,
+                reply,
+            } => {
+                let original = match self.raw(&account, &mailbox, uid).await {
+                    Ok(raw) => blocking(move || content::original(&raw))
+                        .await
+                        .ok_or_else(|| "the message could not be read".to_string()),
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(original);
+            }
+            Command::SaveDraft { draft, reply } => {
+                let saved = self.save_draft(draft).await;
+                let _ = reply.send(saved);
+            }
             Command::SearchServer {
                 places,
                 terms,
@@ -801,6 +852,21 @@ impl Worker {
                 account.address
             ))),
         }
+        if let Some((mailbox, uid)) = draft.replaces
+            && let Ok(mut connection) = Connection::open(&account, &password).await
+        {
+            let _ = connection
+                .delete(account.imap_host.trim(), &mailbox, &[uid])
+                .await;
+            connection.close().await;
+            if let Some(data) = self.data.get_mut(&account.key())
+                && let Some(cached) = data.mailbox_mut(&mailbox)
+            {
+                cached.messages.remove(&uid);
+            }
+            self.save_data(&account.key());
+            self.publish();
+        }
     }
 
     async fn change(
@@ -944,6 +1010,42 @@ impl Worker {
                 self.sync_accounts(vec![known]).await;
             }
         }
+    }
+
+    async fn save_draft(&mut self, draft: Draft) -> Result<(), String> {
+        let replaces = draft.replaces.clone();
+        let known = self
+            .account(&draft.account)
+            .ok_or("that account is no longer signed in")?;
+        let drafts = self
+            .data
+            .get(&known.key())
+            .and_then(|data| actions::role_folder(&data.folders, Role::Drafts))
+            .ok_or("this account has no Drafts folder")?;
+        let raw = compose::unsent(&draft, &known)?;
+        let password = Self::password(&known.key()).await?;
+        let host = known.imap_host.trim().to_string();
+        let mut connection = Connection::open(&known, &password).await?;
+        let saved = async {
+            connection
+                .append_with(&host, &drafts, &raw, "(\\Draft \\Seen)")
+                .await?;
+            if let Some((mailbox, uid)) = &replaces {
+                connection.delete(&host, mailbox, &[*uid]).await?;
+            }
+            Ok::<(), String>(())
+        }
+        .await;
+        connection.close().await;
+        saved?;
+        if let Some((mailbox, uid)) = replaces
+            && let Some(data) = self.data.get_mut(&known.key())
+            && let Some(cached) = data.mailbox_mut(&mailbox)
+        {
+            cached.messages.remove(&uid);
+        }
+        self.sync_accounts(vec![known]).await;
+        Ok(())
     }
 
     async fn search_server(

@@ -3,6 +3,8 @@
 
 use mail_parser::MessagePart;
 
+use crate::model::{Original, Outgoing};
+
 pub(crate) fn text_of(message: &mail_parser::Message<'_>) -> String {
     if let Some(text) = message.body_text(0)
         && !text.trim().is_empty()
@@ -64,6 +66,21 @@ pub(crate) fn attachment(raw: &[u8], index: usize, name: &str) -> Option<Vec<u8>
         .filter(|part| name_of(part) == name)
         .or_else(|| parts.iter().find(|part| name_of(part) == name))?;
     Some(part.decoded().into_owned())
+}
+
+pub(crate) fn original(raw: &[u8]) -> Option<Original> {
+    let message = mail_parser::MessageParser::default().parse(raw)?;
+    Some(Original {
+        text: text_of(&message),
+        attachments: message
+            .attachments()
+            .filter(listed)
+            .map(|part| Outgoing {
+                name: name_of(&part),
+                bytes: part.decoded().into_owned(),
+            })
+            .collect(),
+    })
 }
 
 fn from_html(html: &str) -> String {

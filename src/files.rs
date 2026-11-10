@@ -2,11 +2,14 @@
 // Built with AI assistance (Claude, Anthropic)
 
 use std::fs;
-use std::path::PathBuf;
-use std::sync::mpsc;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use zirbe_store::Reply;
+use eframe::egui;
+use zirbe_store::{Outgoing, Reply};
+
+pub const LARGE: usize = 25 * 1024 * 1024;
 
 fn folder() -> PathBuf {
     dirs::runtime_dir()
@@ -70,6 +73,42 @@ pub fn save(name: String, bytes: Vec<u8>) -> Reply {
         let _ = sender.send(result);
     });
     receiver
+}
+
+pub fn pick() -> Receiver<Vec<Outgoing>> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let chosen = rfd::FileDialog::new().pick_files().unwrap_or_default();
+        let _ = sender.send(chosen.iter().filter_map(|path| read(path)).collect());
+    });
+    receiver
+}
+
+fn read(path: &Path) -> Option<Outgoing> {
+    Some(Outgoing {
+        name: file_name(&path.file_name()?.to_string_lossy()),
+        bytes: fs::read(path).ok()?,
+    })
+}
+
+pub fn dropped(ctx: &egui::Context) -> Vec<Outgoing> {
+    ctx.input(|input| {
+        input
+            .raw
+            .dropped_files
+            .iter()
+            .filter_map(|file| {
+                Some(Outgoing {
+                    name: file_name(&file.path().file_name()?.to_string_lossy()),
+                    bytes: file.bytes().ok()?,
+                })
+            })
+            .collect()
+    })
+}
+
+pub fn size(files: &[Outgoing]) -> usize {
+    files.iter().map(|file| file.bytes.len()).sum()
 }
 
 #[cfg(test)]

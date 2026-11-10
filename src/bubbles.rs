@@ -1,6 +1,8 @@
 // Author: David M. Anderson
 // Built with AI assistance (Claude, Anthropic)
 
+use std::collections::{BTreeSet, HashMap};
+
 use chrono::{Local, NaiveDate};
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{
@@ -29,10 +31,22 @@ pub enum Choice {
     Email { images: bool },
     Open(usize),
     Save(usize),
+    ReplyTo,
+    Forward,
+    Copy,
+    Quoted,
+}
+
+pub fn key_of(message: &Message) -> String {
+    message
+        .message_id
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", message.mailbox, message.uid))
 }
 
 pub struct View<'a> {
     pub images_by_default: bool,
+    pub expanded: &'a HashMap<String, String>,
     pub found: &'a [usize],
     pub current: Option<usize>,
     pub scroll: bool,
@@ -48,6 +62,7 @@ enum Mark {
 struct Style<'a> {
     palette: &'a Palette,
     images_by_default: bool,
+    expanded: &'a HashMap<String, String>,
 }
 
 pub struct Action {
@@ -67,11 +82,13 @@ pub fn show(
     let style = Style {
         palette,
         images_by_default: view.images_by_default,
+        expanded: view.expanded,
     };
     let mut action = None;
     let group = conversation.members.len() > 1;
     let widest = (ui.available_width() * 0.72).min(560.0);
     let mut previous: Option<&Message> = None;
+    let mut people_before: Option<BTreeSet<String>> = None;
     for (index, message) in conversation.messages.iter().enumerate() {
         let mark = if view.current == Some(index) {
             Mark::Current {
@@ -105,6 +122,38 @@ pub fn show(
             });
             ui.add_space(4.0);
         }
+        let present = people_of(message, me);
+        if let Some(before) = &people_before {
+            let names = |addresses: Vec<&String>| -> String {
+                addresses
+                    .into_iter()
+                    .map(|address| {
+                        conversation
+                            .members
+                            .iter()
+                            .find(|member| member.is(address))
+                            .map_or(address.as_str(), |member| member.short())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let joined: Vec<&String> = present.difference(before).collect();
+            let left: Vec<&String> = before.difference(&present).collect();
+            for (who, what) in [(joined, "joined"), (left, "left")] {
+                if !who.is_empty() {
+                    ui.add_space(4.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new(format!("{} {what}", names(who)))
+                                .size(11.5)
+                                .italics()
+                                .color(palette.secondary),
+                        );
+                    });
+                }
+            }
+        }
+        people_before = Some(present);
         let same_sender = previous.is_some_and(|previous| {
             previous
                 .from
@@ -145,9 +194,20 @@ pub fn show(
     action
 }
 
-fn content(message: &Message, color: Color32, wrap: f32) -> LayoutJob {
+fn people_of(message: &Message, me: &str) -> BTreeSet<String> {
+    message
+        .from
+        .iter()
+        .chain(&message.to)
+        .chain(&message.cc)
+        .filter(|person| !person.is(me))
+        .map(|person| person.address.to_lowercase())
+        .collect()
+}
+
+fn content(message: &Message, full: Option<&String>, color: Color32, wrap: f32) -> LayoutJob {
     let mut job = LayoutJob::default();
-    let body = message.text.trim();
+    let body = full.unwrap_or(&message.text).trim();
     let mut add = |text: &str, size: f32, color: Color32, italics: bool| {
         if !job.text.is_empty() {
             job.append(
@@ -238,7 +298,8 @@ fn bubble(
         palette.secondary
     };
     let inner = widest - 2.0 * PADDING.x;
-    let job = content(message, color, inner);
+    let full = style.expanded.get(&key_of(message));
+    let job = content(message, full, color, inner);
     let has_text = !job.text.is_empty();
     let galley = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()));
     let text = if has_text { galley.size() } else { Vec2::ZERO };
@@ -348,16 +409,42 @@ fn bubble(
         }
         top += CONTROLS + CHIP_GAP;
     }
+    let mut area = ui.interact(
+        shape,
+        ui.scope_id()
+            .with(("bubble", message.uid, &message.message_id)),
+        Sense::click(),
+    );
     if has_text {
         let text_rect = Rect::from_min_size(pos2(inside.left(), top), text).expand2(vec2(1.0, 0.0));
-        ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(text_rect)
-                .layout(Layout::top_down(Align::Min)),
-            |ui| ui.add(egui::Label::new(job).wrap().selectable(true)),
-        );
+        let label = ui
+            .scope_builder(
+                UiBuilder::new()
+                    .max_rect(text_rect)
+                    .layout(Layout::top_down(Align::Min)),
+                |ui| ui.add(egui::Label::new(job).wrap().selectable(true)),
+            )
+            .inner;
+        area = area.union(label);
         top += text.y + CHIP_GAP;
     }
+    area.context_menu(|ui| {
+        let mut item = |ui: &mut Ui, label: &str, choice: Choice| {
+            if ui.button(label).clicked() {
+                chosen = Some(choice);
+                ui.close();
+            }
+        };
+        item(ui, "Reply to This Message", Choice::ReplyTo);
+        item(ui, "Forward…", Choice::Forward);
+        item(ui, "Copy Text", Choice::Copy);
+        let quoted = if full.is_some() {
+            "Hide Quoted Text"
+        } else {
+            "Show Quoted Text"
+        };
+        item(ui, quoted, Choice::Quoted);
+    });
     for (index, name) in message.attachments.iter().enumerate() {
         let spot = Rect::from_min_size(pos2(inside.left(), top), vec2(inside.width(), CHIP));
         let chip = ui.put(spot, attachment_button(name, color));

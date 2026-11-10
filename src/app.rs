@@ -11,11 +11,12 @@ use eframe::egui::{
     UiBuilder, pos2,
 };
 use zirbe_store::{
-    Account, Change, Conversation, Draft, FolderInfo, INBOX, MailSource, Message, Query, Reply,
-    Role, Scope, Status, Store,
+    Account, Change, Conversation, Draft, FolderInfo, INBOX, MailSource, Message, Outgoing, Person,
+    Query, Reply, Role, Scope, Status, Store,
 };
 
 use crate::bubbles::{self, Action, Choice};
+use crate::composer::{self, Composer};
 use crate::dates;
 use crate::demo::Demo;
 use crate::files;
@@ -23,6 +24,7 @@ use crate::list;
 use crate::notify::Notifier;
 use crate::page::Page;
 use crate::palette::Palette;
+use crate::people;
 use crate::settings::Settings;
 use crate::signin::{Outcome, SignIn};
 use crate::system::Clock;
@@ -45,21 +47,26 @@ impl Source {
 
 enum Pane {
     Conversation,
-    New(NewConversation),
+    New(Box<Composer>),
 }
 
 #[derive(Default)]
-struct NewConversation {
-    from: String,
-    to: String,
-    name: String,
-    body: String,
-    pending: Option<Reply>,
-    failure: Option<String>,
+struct Replying {
+    target: Option<Message>,
+    removed: Vec<Person>,
+    attachments: Vec<Outgoing>,
+    picking: Option<std::sync::mpsc::Receiver<Vec<Outgoing>>>,
+}
+
+enum Purpose {
+    Forward { account: String, message: Message },
+    Quoted { key: String },
+    Draft { account: String, message: Message },
 }
 
 struct Sending {
     conversation: String,
+    draft: Draft,
     reply: Reply,
 }
 
@@ -97,14 +104,32 @@ enum Shown {
 }
 
 enum Work {
-    Open { name: String, reply: Reply<Vec<u8>> },
-    Save { name: String, reply: Reply<Vec<u8>> },
-    Saving { name: String, reply: Reply },
+    Original {
+        purpose: Box<Purpose>,
+        reply: Reply<zirbe_store::Original>,
+    },
+    Open {
+        name: String,
+        reply: Reply<Vec<u8>>,
+    },
+    Save {
+        name: String,
+        reply: Reply<Vec<u8>>,
+    },
+    Saving {
+        name: String,
+        reply: Reply,
+    },
 }
 
 impl Work {
     fn doing(&self) -> String {
         match self {
+            Work::Original { purpose, .. } => match purpose.as_ref() {
+                Purpose::Forward { .. } => "Preparing the forward…".into(),
+                Purpose::Quoted { .. } => "Downloading the quoted text…".into(),
+                Purpose::Draft { .. } => "Opening the draft…".into(),
+            },
             Work::Open { name, .. } | Work::Save { name, .. } => format!("Downloading {name}…"),
             Work::Saving { name, .. } => format!("Saving {name}…"),
         }
@@ -112,6 +137,7 @@ impl Work {
 
     fn failed(&self, error: &str) -> String {
         match self {
+            Work::Original { .. } => format!("The message could not be downloaded: {error}"),
             Work::Open { name, .. } => format!("{name} did not open: {error}"),
             Work::Save { name, .. } | Work::Saving { name, .. } => {
                 format!("{name} was not saved: {error}")
@@ -120,7 +146,7 @@ impl Work {
     }
 }
 
-fn arrived<T>(reply: &Reply<T>, ctx: &egui::Context) -> Option<Result<T, String>> {
+pub(crate) fn arrived<T>(reply: &Reply<T>, ctx: &egui::Context) -> Option<Result<T, String>> {
     match reply.try_recv() {
         Ok(result) => Some(result),
         Err(TryRecvError::Empty) => {
@@ -155,6 +181,11 @@ pub struct App {
     matches: Option<(String, usize, BTreeSet<String>)>,
     server_search: Option<ServerSearch>,
     find: Option<Find>,
+    replying: HashMap<String, Replying>,
+    retry: Option<(String, Draft)>,
+    expanded: HashMap<String, String>,
+    opening_draft: Option<String>,
+    known: Option<(usize, Vec<Person>)>,
     auto_opened: Option<String>,
     adding_account: bool,
     sign_in: SignIn,
@@ -189,6 +220,11 @@ impl App {
             matches: None,
             server_search: None,
             find: None,
+            replying: HashMap::new(),
+            retry: None,
+            expanded: HashMap::new(),
+            opening_draft: None,
+            known: None,
             auto_opened: None,
             adding_account: false,
             sign_in: SignIn::default(),
@@ -223,10 +259,7 @@ impl App {
             .first()
             .map(Account::key)
             .unwrap_or_default();
-        self.pane = Pane::New(NewConversation {
-            from,
-            ..NewConversation::default()
-        });
+        self.pane = Pane::New(Box::new(Composer::new(from)));
     }
 
     fn account(&self, key: &str) -> Option<Account> {
@@ -255,8 +288,9 @@ impl App {
         {
             self.find = None;
         }
-        if matches!(self.pane, Pane::New(_))
+        if let Pane::New(composer) = &mut self.pane
             && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+            && composer.cancel()
         {
             self.pane = Pane::Conversation;
         }
@@ -272,10 +306,13 @@ impl App {
         match sending.reply.try_recv() {
             Ok(Ok(())) => {
                 self.drafts.remove(&sending.conversation);
+                self.replying.remove(&sending.conversation);
+                self.retry = None;
                 self.sending = None;
             }
             Ok(Err(error)) => {
                 self.failure = Some((sending.conversation.clone(), format!("Not sent. {error}")));
+                self.retry = Some((sending.conversation.clone(), sending.draft.clone()));
                 self.sending = None;
             }
             Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
@@ -288,7 +325,14 @@ impl App {
             return;
         };
         let failed = |error: String| work.failed(&error);
+        let mut original = None;
         let next = match &work {
+            Work::Original { reply, .. } => arrived(reply, ctx).map(|result| {
+                result.map(|found| {
+                    original = Some(found);
+                    None
+                })
+            }),
             Work::Open { name, reply } => arrived(reply, ctx).map(|result| {
                 result
                     .and_then(|bytes| files::open(name, &bytes))
@@ -304,11 +348,38 @@ impl App {
             }),
             Work::Saving { reply, .. } => arrived(reply, ctx).map(|result| result.map(|()| None)),
         };
-        match next {
-            None => self.fetching = Some(Fetching { conversation, work }),
-            Some(Ok(Some(work))) => self.fetching = Some(Fetching { conversation, work }),
-            Some(Ok(None)) => {}
-            Some(Err(error)) => self.failure = Some((conversation, failed(error))),
+        let error = match next {
+            None => {
+                self.fetching = Some(Fetching { conversation, work });
+                return;
+            }
+            Some(Ok(Some(work))) => {
+                self.fetching = Some(Fetching { conversation, work });
+                return;
+            }
+            Some(Ok(None)) => None,
+            Some(Err(error)) => Some(failed(error)),
+        };
+        if let Some(error) = error {
+            self.failure = Some((conversation, error));
+            return;
+        }
+        if let (Work::Original { purpose, .. }, Some(original)) = (work, original) {
+            match *purpose {
+                Purpose::Forward { account, message } => {
+                    self.reading = None;
+                    self.pane = Pane::New(Box::new(Composer::forward(account, &message, original)));
+                }
+                Purpose::Quoted { key } => {
+                    self.expanded.insert(key, original.text);
+                }
+                Purpose::Draft { account, message } => {
+                    let place = (message.mailbox.clone(), message.uid);
+                    self.pane = Pane::New(Box::new(Composer::draft(
+                        account, &message, original, place,
+                    )));
+                }
+            }
         }
     }
 
@@ -714,13 +785,17 @@ impl App {
     }
 
     fn in_trash(&self) -> bool {
+        self.in_role(Role::Trash)
+    }
+
+    fn in_role(&self, role: Role) -> bool {
         let Scope::Mailbox { account, name } = &self.scope else {
             return false;
         };
         self.account(account).is_some_and(|account| {
             self.folders(&account)
                 .iter()
-                .any(|folder| &folder.name == name && folder.role == Some(Role::Trash))
+                .any(|folder| &folder.name == name && folder.role == Some(role))
         })
     }
 
@@ -1128,6 +1203,36 @@ impl App {
             return;
         };
         let conversation = conversation.clone();
+        if self.in_role(Role::Drafts)
+            && let Scope::Mailbox { name, .. } = &self.scope
+            && let Some(draft) = conversation
+                .messages
+                .iter()
+                .rev()
+                .find(|message| &message.mailbox == name && message.uid != 0)
+        {
+            if self.opening_draft.as_ref() != Some(&conversation.key) {
+                self.opening_draft = Some(conversation.key.clone());
+                self.fetching = Some(Fetching {
+                    conversation: conversation.key.clone(),
+                    work: Work::Original {
+                        reply: self.source.mail().original(&conversation.account, draft),
+                        purpose: Box::new(Purpose::Draft {
+                            account: conversation.account.clone(),
+                            message: draft.clone(),
+                        }),
+                    },
+                });
+            }
+            egui::CentralPanel::default()
+                .frame(Frame::new().fill(palette.canvas))
+                .show(ui, |ui| {
+                    ui.centered_and_justified(|ui| {
+                        ui.spinner();
+                    });
+                });
+            return;
+        }
         if conversation.unread > 0
             && ui
                 .ctx()
@@ -1300,6 +1405,7 @@ impl App {
                             &palette,
                             &bubbles::View {
                                 images_by_default: self.settings.load_images,
+                                expanded: &self.expanded,
                                 found: &found,
                                 current,
                                 scroll,
@@ -1311,6 +1417,49 @@ impl App {
                     match choice {
                         Choice::Email { images } => {
                             self.open_reading(&conversation, message, images)
+                        }
+                        Choice::ReplyTo => {
+                            self.replying
+                                .entry(conversation.key.clone())
+                                .or_default()
+                                .target = Some(message);
+                            let editor = egui::Id::unique(("composer", &conversation.key));
+                            ui.memory_mut(|memory| memory.request_focus(editor));
+                        }
+                        Choice::Copy => {
+                            let key = bubbles::key_of(&message);
+                            let text = self.expanded.get(&key).cloned().unwrap_or(message.text);
+                            ui.ctx().copy_text(text);
+                        }
+                        Choice::Quoted => {
+                            let key = bubbles::key_of(&message);
+                            if self.expanded.remove(&key).is_none() {
+                                self.fetching = Some(Fetching {
+                                    conversation: conversation.key.clone(),
+                                    work: Work::Original {
+                                        reply: self
+                                            .source
+                                            .mail()
+                                            .original(&conversation.account, &message),
+                                        purpose: Box::new(Purpose::Quoted { key }),
+                                    },
+                                });
+                            }
+                        }
+                        Choice::Forward => {
+                            self.fetching = Some(Fetching {
+                                conversation: conversation.key.clone(),
+                                work: Work::Original {
+                                    reply: self
+                                        .source
+                                        .mail()
+                                        .original(&conversation.account, &message),
+                                    purpose: Box::new(Purpose::Forward {
+                                        account: conversation.account.clone(),
+                                        message,
+                                    }),
+                                },
+                            });
                         }
                         choice => self.attachment(
                             &conversation.key,
@@ -1443,7 +1592,11 @@ impl App {
         let mail = self.source.mail();
         let name = |index: usize| message.attachments.get(index).cloned().unwrap_or_default();
         let work = match choice {
-            Choice::Email { .. } => return,
+            Choice::Email { .. }
+            | Choice::ReplyTo
+            | Choice::Forward
+            | Choice::Copy
+            | Choice::Quoted => return,
             Choice::Open(index) => Work::Open {
                 name: name(index),
                 reply: mail.attachment(account, message, index),
@@ -1462,14 +1615,32 @@ impl App {
 
     fn composer(&mut self, ui: &mut Ui, conversation: &Conversation, account: Option<&Account>) {
         let palette = self.palette;
-        if let Some((key, error)) = &self.failure
-            && key == &conversation.key
+        let key = conversation.key.clone();
+        if let Some((failed, error)) = &self.failure
+            && *failed == key
         {
-            ui.label(RichText::new(error).size(12.0).color(palette.failure));
+            let mut retry = false;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(error).size(12.0).color(palette.failure));
+                if self.retry.as_ref().is_some_and(|(at, _)| *at == key)
+                    && self.sending.is_none()
+                    && ui.small_button("Retry").clicked()
+                {
+                    retry = true;
+                }
+            });
+            if retry && let Some((_, draft)) = self.retry.take() {
+                self.failure = None;
+                self.sending = Some(Sending {
+                    conversation: key.clone(),
+                    reply: self.source.mail().send(draft.clone()),
+                    draft,
+                });
+            }
             ui.add_space(4.0);
         }
         if let Some(fetching) = &self.fetching
-            && fetching.conversation == conversation.key
+            && fetching.conversation == key
         {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -1484,13 +1655,126 @@ impl App {
         let sending = self
             .sending
             .as_ref()
-            .is_some_and(|sending| sending.conversation == conversation.key);
-        let editor_id = egui::Id::unique(("composer", &conversation.key));
+            .is_some_and(|sending| sending.conversation == key);
+        let state = self.replying.entry(key.clone()).or_default();
+        if let Some(picking) = &state.picking {
+            match picking.try_recv() {
+                Ok(files) => {
+                    state.attachments.extend(files);
+                    state.picking = None;
+                }
+                Err(TryRecvError::Empty) => {
+                    ui.ctx().request_repaint_after(Duration::from_millis(200))
+                }
+                Err(TryRecvError::Disconnected) => state.picking = None,
+            }
+        }
+        if let Some(target) = &state.target {
+            let mut cancel = false;
+            ui.horizontal(|ui| {
+                let sender = target.from.as_ref().map_or("someone", |from| from.short());
+                let snippet: String = target
+                    .text
+                    .split_whitespace()
+                    .take(12)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("Replying to {sender}: {snippet}"))
+                            .size(12.0)
+                            .color(palette.secondary),
+                    )
+                    .truncate(),
+                );
+                cancel = ui
+                    .small_button("✕")
+                    .on_hover_text("Reply to the latest message instead")
+                    .clicked();
+            });
+            if cancel {
+                state.target = None;
+            }
+        }
+        let recipients: Vec<Person> = account
+            .map(|account| {
+                let draft =
+                    zirbe_store::reply(conversation, account, String::new(), state.target.as_ref());
+                draft.to.into_iter().chain(draft.cc).collect()
+            })
+            .unwrap_or_default();
+        let mut remove = None;
+        let mut undo = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("To").size(12.0).color(palette.secondary));
+            for person in recipients
+                .iter()
+                .filter(|person| !state.removed.iter().any(|gone| gone.is(&person.address)))
+            {
+                let chip = egui::Button::new(
+                    RichText::new(format!("{} ✕", person.short()))
+                        .size(12.0)
+                        .color(palette.text),
+                )
+                .fill(palette.field)
+                .corner_radius(10.0);
+                if ui
+                    .add(chip)
+                    .on_hover_text(format!("Leave {} out of this reply", person.address))
+                    .clicked()
+                {
+                    remove = Some(person.clone());
+                }
+            }
+            if let Some(last) = state.removed.last() {
+                let link = egui::Button::new(
+                    RichText::new(format!("Undo removing {}", last.short()))
+                        .size(12.0)
+                        .color(palette.accent),
+                )
+                .frame(false);
+                undo = ui.add(link).clicked();
+            }
+        });
+        if let Some(person) = remove {
+            state.removed.push(person);
+        }
+        if undo {
+            state.removed.pop();
+        }
+        let mut drop_file = None;
+        if !state.attachments.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for (index, file) in state.attachments.iter().enumerate() {
+                    if ui
+                        .small_button(format!("📎 {} ✕", file.name))
+                        .on_hover_text("Remove")
+                        .clicked()
+                    {
+                        drop_file = Some(index);
+                    }
+                }
+            });
+            if files::size(&state.attachments) > files::LARGE {
+                ui.label(
+                    RichText::new(
+                        "These attachments come to more than 25 MB; many mail servers refuse that.",
+                    )
+                    .size(12.0)
+                    .color(palette.failure),
+                );
+            }
+        }
+        if let Some(index) = drop_file {
+            state.attachments.remove(index);
+        }
+        let editor_id = egui::Id::unique(("composer", &key));
         let focused = ui.ctx().memory(|memory| memory.has_focus(editor_id));
         let enter = focused && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
         let mut send = false;
+        let mut pick = false;
         ui.horizontal(|ui| {
-            let draft = self.drafts.entry(conversation.key.clone()).or_default();
+            let draft = self.drafts.entry(key.clone()).or_default();
             let ready = !draft.trim().is_empty() && !sending && account.is_some();
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let button = egui::Button::new(RichText::new("Send").color(palette.on_accent))
@@ -1503,6 +1787,10 @@ impl App {
                 if sending {
                     ui.spinner();
                 }
+                pick = ui
+                    .button("📎")
+                    .on_hover_text("Attach files, or drop them on the window")
+                    .clicked();
                 ui.add(
                     TextEdit::multiline(draft)
                         .id(editor_id)
@@ -1519,158 +1807,75 @@ impl App {
             }
         });
         ui.label(
-            RichText::new("Enter sends, Shift+Enter starts a new line. Replies go to everyone in the conversation.")
+            RichText::new("Enter sends, Shift+Enter starts a new line.")
                 .size(10.5)
                 .color(palette.secondary),
         );
+        let state = self.replying.entry(key.clone()).or_default();
+        if pick && state.picking.is_none() {
+            state.picking = Some(files::pick());
+        }
         if send && let Some(account) = account {
-            let body = self
-                .drafts
-                .get(&conversation.key)
-                .cloned()
-                .unwrap_or_default();
-            let draft = zirbe_store::reply(conversation, account, body.trim().to_string());
+            let body = self.drafts.get(&key).cloned().unwrap_or_default();
+            let mut draft = zirbe_store::reply(
+                conversation,
+                account,
+                body.trim().to_string(),
+                state.target.as_ref(),
+            );
+            let kept = |people: Vec<Person>| -> Vec<Person> {
+                people
+                    .into_iter()
+                    .filter(|person| !state.removed.iter().any(|gone| gone.is(&person.address)))
+                    .collect()
+            };
+            draft.to = kept(draft.to);
+            draft.cc = kept(draft.cc);
+            draft.attachments = state.attachments.clone();
+            if draft.to.is_empty() && draft.cc.is_empty() {
+                self.failure = Some((
+                    key,
+                    "Not sent. Everyone has been left out of this reply.".into(),
+                ));
+                return;
+            }
             self.failure = None;
+            self.retry = None;
             self.sending = Some(Sending {
-                conversation: conversation.key.clone(),
-                reply: self.source.mail().send(draft),
+                conversation: key,
+                reply: self.source.mail().send(draft.clone()),
+                draft,
             });
         }
     }
 
-    fn new_pane(&mut self, ui: &mut Ui) {
-        let palette = self.palette;
+    fn new_pane(&mut self, ui: &mut Ui, conversations: &Arc<Vec<Conversation>>) {
         let accounts = self.source.mail().accounts();
-        let Pane::New(new) = &mut self.pane else {
+        let source = Arc::as_ptr(conversations) as usize;
+        if self.known.as_ref().is_none_or(|(from, _)| *from != source) {
+            self.known = Some((source, people::known(conversations, &accounts)));
+        }
+        let known = self
+            .known
+            .as_ref()
+            .map_or(&[][..], |(_, people)| people.as_slice());
+        let palette = self.palette;
+        let Pane::New(composer) = &mut self.pane else {
             return;
         };
-        let mut done = false;
-        if let Some(reply) = &new.pending {
-            match reply.try_recv() {
-                Ok(Ok(())) => done = true,
-                Ok(Err(error)) => {
-                    new.failure = Some(error);
-                    new.pending = None;
-                }
-                Err(TryRecvError::Empty) => {
-                    ui.ctx().request_repaint_after(Duration::from_millis(150))
-                }
-                Err(TryRecvError::Disconnected) => new.pending = None,
+        match composer.show(ui, self.source.mail(), &accounts, known, &palette) {
+            composer::Outcome::Open => {}
+            composer::Outcome::Closed => self.pane = Pane::Conversation,
+            composer::Outcome::Sent { subject } => {
+                let fresh = self.source.mail().conversations();
+                self.selected = fresh
+                    .iter()
+                    .filter(|c| subject.is_empty() || c.title == subject)
+                    .filter(|c| c.messages.iter().any(|m| m.uid == 0))
+                    .max_by_key(|c| c.latest())
+                    .map(|c| c.key.clone());
+                self.pane = Pane::Conversation;
             }
-        }
-        let mut cancel = false;
-        egui::CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(palette.canvas)
-                    .inner_margin(Margin::same(24)),
-            )
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new("New conversation")
-                        .size(18.0)
-                        .strong()
-                        .color(palette.text),
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(
-                        "A conversation is named by its subject, which everyone in it sees.",
-                    )
-                    .size(12.0)
-                    .color(palette.secondary),
-                );
-                ui.add_space(14.0);
-                let width = ui.available_width().min(560.0);
-                egui::Grid::new("new conversation")
-                    .num_columns(2)
-                    .spacing([12.0, 10.0])
-                    .show(ui, |ui| {
-                        if accounts.len() > 1 {
-                            ui.label("From");
-                            egui::ComboBox::from_id_salt("from")
-                                .selected_text(new.from.clone())
-                                .show_ui(ui, |ui| {
-                                    for account in &accounts {
-                                        ui.selectable_value(
-                                            &mut new.from,
-                                            account.key(),
-                                            account.address.clone(),
-                                        );
-                                    }
-                                });
-                            ui.end_row();
-                        }
-                        ui.label("To");
-                        ui.add(
-                            TextEdit::singleline(&mut new.to)
-                                .hint_text("Names and addresses, separated by commas")
-                                .desired_width(width - 80.0),
-                        );
-                        ui.end_row();
-                        ui.label("Name");
-                        ui.add(
-                            TextEdit::singleline(&mut new.name)
-                                .hint_text("What this conversation is about")
-                                .desired_width(width - 80.0),
-                        );
-                        ui.end_row();
-                    });
-                ui.add_space(10.0);
-                ui.add(
-                    TextEdit::multiline(&mut new.body)
-                        .hint_text("Message")
-                        .desired_rows(8)
-                        .desired_width(width)
-                        .background_color(palette.field),
-                );
-                if let Some(failure) = &new.failure {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(failure).size(12.0).color(palette.failure));
-                }
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    let ready = !new.to.trim().is_empty()
-                        && !new.name.trim().is_empty()
-                        && !new.body.trim().is_empty()
-                        && new.pending.is_none();
-                    let button = egui::Button::new(RichText::new("Send").color(palette.on_accent))
-                        .fill(palette.accent);
-                    if ui.add_enabled(ready, button).clicked() {
-                        match zirbe_store::parse_people(&new.to) {
-                            Ok(to) => {
-                                new.failure = None;
-                                new.pending = Some(self.source.mail().send(Draft {
-                                    account: new.from.clone(),
-                                    to,
-                                    subject: new.name.trim().to_string(),
-                                    body: new.body.trim().to_string(),
-                                    ..Draft::default()
-                                }));
-                            }
-                            Err(error) => new.failure = Some(error),
-                        }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                    if new.pending.is_some() {
-                        ui.spinner();
-                    }
-                });
-            });
-        if done {
-            let name = new.name.trim().to_string();
-            self.selected = self
-                .source
-                .mail()
-                .conversations()
-                .iter()
-                .find(|conversation| conversation.title == name)
-                .map(|conversation| conversation.key.clone());
-            self.pane = Pane::Conversation;
-        } else if cancel {
-            self.pane = Pane::Conversation;
         }
     }
 
@@ -1805,11 +2010,26 @@ impl eframe::App for App {
         self.update_matches(&conversations);
         self.news(&ctx, &conversations);
         self.keys(&ctx, &conversations);
+        let dropped = files::dropped(&ctx);
+        if !dropped.is_empty() {
+            match &mut self.pane {
+                Pane::New(composer) => composer.attach(dropped),
+                Pane::Conversation => {
+                    if let Some(key) = &self.selected {
+                        self.replying
+                            .entry(key.clone())
+                            .or_default()
+                            .attachments
+                            .extend(dropped);
+                    }
+                }
+            }
+        }
         self.sidebar(ui, &conversations);
         match self.pane {
             Pane::Conversation if self.picked.len() > 1 => self.several(ui, &conversations),
             Pane::Conversation => self.conversation_pane(ui, &conversations),
-            Pane::New(_) => self.new_pane(ui),
+            Pane::New(_) => self.new_pane(ui, &conversations),
         }
         self.settings_window(&ctx);
         self.confirm_window(&ctx);

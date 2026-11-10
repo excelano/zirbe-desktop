@@ -210,10 +210,25 @@ pub struct Draft {
     pub account: String,
     pub to: Vec<Person>,
     pub cc: Vec<Person>,
+    pub bcc: Vec<Person>,
     pub subject: String,
     pub body: String,
     pub in_reply_to: Option<String>,
     pub references: Vec<String>,
+    pub attachments: Vec<Outgoing>,
+    pub replaces: Option<(String, u32)>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Original {
+    pub text: String,
+    pub attachments: Vec<Outgoing>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Outgoing {
+    pub name: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

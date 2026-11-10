@@ -509,8 +509,18 @@ impl Connection {
     }
 
     pub async fn append(&mut self, host: &str, mailbox: &str, raw: &[u8]) -> Result<(), String> {
+        self.append_with(host, mailbox, raw, "(\\Seen)").await
+    }
+
+    pub async fn append_with(
+        &mut self,
+        host: &str,
+        mailbox: &str,
+        raw: &[u8],
+        flags: &str,
+    ) -> Result<(), String> {
         self.session
-            .append(mailbox, Some("(\\Seen)"), None, raw)
+            .append(mailbox, Some(flags), None, raw)
             .await
             .map_err(failed(host))
     }

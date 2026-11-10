@@ -29,7 +29,9 @@ by a sync is queued for the window as arrivals. A sent message's raw text stays
 in the cache until its copy is seen in the Sent folder, and every sync retries
 saving it there. The app crate is the window: `app.rs` lays it out, `list.rs` draws the
 conversation rows, `bubbles.rs` the messages and their attachment chips,
-`files.rs` opening and saving attachments, `notify.rs` new-mail notifications
+`files.rs` opening, saving, picking and dropping files, `composer.rs` the
+new-conversation, forward and draft pane, `people.rs` recipient suggestions
+drawn from the synced mail, `notify.rs` new-mail notifications
 and the launcher's unread count over the session bus, `signin.rs` the account form,
 `demo.rs` the sample conversations behind `--demo`, and `page.rs` the Email
 View: Blitz (`blitz-html`, pinned to an exact beta) lays out and paints a
