@@ -1,6 +1,7 @@
 // Author: David M. Anderson
 // Built with AI assistance (Claude, Anthropic)
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
 use chrono::{Local, NaiveDate};
@@ -9,7 +10,7 @@ use eframe::egui::{
     self, Align, Color32, CornerRadius, FontId, Layout, Rect, RichText, Sense, TextFormat, Ui,
     UiBuilder, Vec2, pos2, vec2,
 };
-use zirbe_store::{Conversation, Message};
+use zirbe_store::{Conversation, Message, When};
 
 use crate::dates;
 use crate::list;
@@ -35,6 +36,29 @@ pub enum Choice {
     Forward,
     Copy,
     Quoted,
+    React(&'static str),
+    Join(String),
+    AddToCalendar,
+}
+
+pub const REACTIONS: [&str; 6] = ["👍", "👎", "❤", "😂", "‼", "❓"];
+const THUMB: f32 = 240.0;
+
+pub enum Thumb {
+    Loading,
+    Ready(egui::TextureHandle),
+    Failed,
+}
+
+pub fn thumb_key(message: &Message, index: usize) -> String {
+    format!("{}#{index}", key_of(message))
+}
+
+fn is_image(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
+        .iter()
+        .any(|extension| lower.ends_with(extension))
 }
 
 pub fn key_of(message: &Message) -> String {
@@ -47,6 +71,10 @@ pub fn key_of(message: &Message) -> String {
 pub struct View<'a> {
     pub images_by_default: bool,
     pub expanded: &'a HashMap<String, String>,
+    pub thumbs: &'a HashMap<String, Thumb>,
+    pub wanted: &'a RefCell<Vec<(Message, usize)>>,
+    pub pending: Option<(&'a str, &'a str)>,
+    pub clock: Clock,
     pub found: &'a [usize],
     pub current: Option<usize>,
     pub scroll: bool,
@@ -63,6 +91,40 @@ struct Style<'a> {
     palette: &'a Palette,
     images_by_default: bool,
     expanded: &'a HashMap<String, String>,
+}
+
+fn reactions_of(
+    conversation: &Conversation,
+    pending: Option<(&str, &str)>,
+    me: &str,
+) -> HashMap<String, Vec<String>> {
+    let mut latest: HashMap<(String, String), (chrono::DateTime<chrono::Utc>, String)> =
+        HashMap::new();
+    for message in &conversation.messages {
+        let (Some(emoji), Some(target), Some(from)) =
+            (&message.reaction, &message.in_reply_to, &message.from)
+        else {
+            continue;
+        };
+        let key = (target.clone(), from.address.to_lowercase());
+        if latest
+            .get(&key)
+            .is_none_or(|(date, _)| *date <= message.date)
+        {
+            latest.insert(key, (message.date, emoji.clone()));
+        }
+    }
+    if let Some((target, emoji)) = pending {
+        latest.insert(
+            (target.to_string(), me.to_lowercase()),
+            (chrono::Utc::now(), emoji.to_string()),
+        );
+    }
+    let mut found: HashMap<String, Vec<String>> = HashMap::new();
+    for ((target, _), (_, emoji)) in latest {
+        found.entry(target).or_default().push(emoji);
+    }
+    found
 }
 
 pub struct Action {
@@ -84,12 +146,16 @@ pub fn show(
         images_by_default: view.images_by_default,
         expanded: view.expanded,
     };
+    let reactions = reactions_of(conversation, view.pending, me);
     let mut action = None;
     let group = conversation.members.len() > 1;
     let widest = (ui.available_width() * 0.72).min(560.0);
     let mut previous: Option<&Message> = None;
     let mut people_before: Option<BTreeSet<String>> = None;
     for (index, message) in conversation.messages.iter().enumerate() {
+        if message.reaction.is_some() {
+            continue;
+        }
         let mark = if view.current == Some(index) {
             Mark::Current {
                 scroll: view.scroll,
@@ -174,7 +240,7 @@ pub fn show(
             });
         }
         ui.add_space(if same_sender { 2.0 } else { 6.0 });
-        if let Some(choice) = bubble(
+        let (choice, shape) = bubble(
             ui,
             message,
             mine,
@@ -182,7 +248,12 @@ pub fn show(
             &style,
             (!mine).then_some(!same_sender || !group),
             mark,
-        ) {
+        );
+        if let Some(emojis) = message.message_id.as_ref().and_then(|id| reactions.get(id)) {
+            badge(ui, shape, mine, emojis, palette);
+        }
+        let extra = extras(ui, message, mine, shape, view, palette);
+        if let Some(choice) = choice.or(extra) {
             action = Some(Action {
                 message: message.clone(),
                 choice,
@@ -276,6 +347,229 @@ fn label_width(ui: &Ui, text: &str, color: Color32) -> f32 {
     })
 }
 
+fn badge(ui: &Ui, shape: Rect, mine: bool, emojis: &[String], palette: &Palette) {
+    let mut counted: Vec<(String, usize)> = Vec::new();
+    for emoji in emojis {
+        match counted.iter_mut().find(|(known, _)| known == emoji) {
+            Some((_, count)) => *count += 1,
+            None => counted.push((emoji.clone(), 1)),
+        }
+    }
+    let text: String = counted
+        .iter()
+        .map(|(emoji, count)| {
+            if *count > 1 {
+                format!("{emoji}{count}")
+            } else {
+                emoji.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text, FontId::proportional(18.0), palette.text);
+    let size = galley.size() + vec2(14.0, 6.0);
+    let corner = if mine {
+        pos2(shape.left() - size.x * 0.4, shape.top() - size.y * 0.55)
+    } else {
+        pos2(shape.right() - size.x * 0.6, shape.top() - size.y * 0.55)
+    };
+    let rect = Rect::from_min_size(corner, size);
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(10), palette.field);
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(10),
+        egui::Stroke::new(1.0, palette.separator),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(rect.min + vec2(7.0, 3.0), galley, palette.text);
+}
+
+fn when(moment: &When, clock: Clock) -> String {
+    let value = moment.value.trim();
+    if value.len() == 8 {
+        return chrono::NaiveDate::parse_from_str(value, "%Y%m%d")
+            .map(|date| format!("{} (all day)", date.format("%a %-d %b")))
+            .unwrap_or_else(|_| value.to_string());
+    }
+    let time = |naive: chrono::NaiveDateTime| {
+        let hours = match clock {
+            Clock::TwelveHour => naive.format("%-I:%M %p").to_string(),
+            Clock::TwentyFourHour => naive.format("%H:%M").to_string(),
+        };
+        format!("{} {hours}", naive.format("%a %-d %b"))
+    };
+    if let Some(utc) = value.strip_suffix('Z') {
+        return chrono::NaiveDateTime::parse_from_str(utc, "%Y%m%dT%H%M%S")
+            .map(|naive| time(naive.and_utc().with_timezone(&Local).naive_local()))
+            .unwrap_or_else(|_| value.to_string());
+    }
+    let shown = chrono::NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%S")
+        .map(time)
+        .unwrap_or_else(|_| value.to_string());
+    match &moment.zone {
+        Some(zone) => format!("{shown} ({zone})"),
+        None => shown,
+    }
+}
+
+fn extras(
+    ui: &mut Ui,
+    message: &Message,
+    mine: bool,
+    shape: Rect,
+    view: &View<'_>,
+    palette: &Palette,
+) -> Option<Choice> {
+    let mut chosen = None;
+    let place = |ui: &mut Ui, width: f32, add: &mut dyn FnMut(&mut Ui)| {
+        ui.horizontal(|ui| {
+            if mine {
+                ui.add_space((shape.right() - ui.min_rect().left() - width).max(0.0));
+            } else {
+                ui.add_space((shape.left() - ui.min_rect().left()).max(0.0));
+            }
+            ui.vertical(|ui| add(ui));
+        });
+    };
+    if let Some(invite) = &message.invite {
+        ui.add_space(4.0);
+        if invite.method == "REPLY" {
+            if let Some((who, answer)) = &invite.answer {
+                let said = match answer.as_str() {
+                    "ACCEPTED" => "accepted",
+                    "DECLINED" => "declined",
+                    "TENTATIVE" => "said maybe to",
+                    _ => "answered",
+                };
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new(format!("{who} {said} {}", invite.summary))
+                            .size(11.5)
+                            .italics()
+                            .color(palette.secondary),
+                    );
+                });
+            }
+        } else {
+            place(ui, 320.0, &mut |ui| {
+                egui::Frame::new()
+                    .fill(palette.field)
+                    .stroke(egui::Stroke::new(1.0, palette.separator))
+                    .corner_radius(12.0)
+                    .inner_margin(egui::Margin::same(10))
+                    .show(ui, |ui| {
+                        ui.set_width(300.0);
+                        if invite.cancelled {
+                            ui.label(
+                                RichText::new("Cancelled")
+                                    .size(11.5)
+                                    .strong()
+                                    .color(palette.failure),
+                            );
+                        } else if invite.sequence > 0 {
+                            ui.label(
+                                RichText::new("Updated")
+                                    .size(11.5)
+                                    .strong()
+                                    .color(palette.accent),
+                            );
+                        }
+                        ui.label(
+                            RichText::new(&invite.summary)
+                                .size(14.0)
+                                .strong()
+                                .color(palette.text),
+                        );
+                        if let Some(start) = &invite.start {
+                            let span = match &invite.end {
+                                Some(end) => format!(
+                                    "{} – {}",
+                                    when(start, view.clock),
+                                    when(end, view.clock)
+                                ),
+                                None => when(start, view.clock),
+                            };
+                            ui.label(RichText::new(span).size(12.5).color(palette.text));
+                        }
+                        if !invite.location.is_empty() {
+                            ui.label(
+                                RichText::new(&invite.location)
+                                    .size(12.0)
+                                    .color(palette.secondary),
+                            );
+                        }
+                        if !invite.organizer.is_empty() {
+                            ui.label(
+                                RichText::new(format!("From {}", invite.organizer))
+                                    .size(12.0)
+                                    .color(palette.secondary),
+                            );
+                        }
+                        ui.horizontal(|ui| {
+                            if let Some(link) = &invite.join
+                                && !invite.cancelled
+                                && ui.button("Join").on_hover_text(link).clicked()
+                            {
+                                chosen = Some(Choice::Join(link.clone()));
+                            }
+                            if !invite.cancelled && ui.button("Add to Calendar").clicked() {
+                                chosen = Some(Choice::AddToCalendar);
+                            }
+                        });
+                    });
+            });
+        }
+    }
+    let images: Vec<(usize, &String)> = message
+        .attachments
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| is_image(name))
+        .collect();
+    if images.is_empty() || message.uid == 0 {
+        return chosen;
+    }
+    ui.add_space(4.0);
+    let mut wanted = view.wanted.borrow_mut();
+    let width = images.len() as f32 * (THUMB + 6.0);
+    place(ui, width.min(THUMB * 2.0 + 6.0), &mut |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.set_max_width(THUMB * 2.0 + 12.0);
+            for (index, name) in &images {
+                match view.thumbs.get(&thumb_key(message, *index)) {
+                    Some(Thumb::Ready(texture)) => {
+                        let size = texture.size_vec2();
+                        let scale = (THUMB / size.x.max(size.y)).min(1.0);
+                        let image = egui::Image::new((texture.id(), size * scale))
+                            .corner_radius(10.0)
+                            .sense(Sense::click());
+                        let response = ui
+                            .add(image)
+                            .on_hover_text(format!("{name}: click to open, right-click to save"));
+                        if let Some(choice) = attachment_choice(&response, *index) {
+                            chosen = Some(choice);
+                        }
+                    }
+                    Some(Thumb::Loading) => {
+                        ui.add_sized(vec2(THUMB * 0.5, THUMB * 0.35), egui::Spinner::new());
+                    }
+                    Some(Thumb::Failed) => {}
+                    None => {
+                        if ui.is_rect_visible(shape.expand(400.0)) {
+                            wanted.push((message.clone(), *index));
+                        }
+                        ui.add_sized(vec2(THUMB * 0.5, THUMB * 0.35), egui::Spinner::new());
+                    }
+                }
+            }
+        });
+    });
+    chosen
+}
+
 fn bubble(
     ui: &mut Ui,
     message: &Message,
@@ -284,7 +578,7 @@ fn bubble(
     style: &Style<'_>,
     avatar: Option<bool>,
     mark: Mark,
-) -> Option<Choice> {
+) -> (Option<Choice>, Rect) {
     let palette = style.palette;
     let images_by_default = style.images_by_default;
     let (fill, color) = if mine {
@@ -429,6 +723,17 @@ fn bubble(
         top += text.y + CHIP_GAP;
     }
     area.context_menu(|ui| {
+        if message.message_id.is_some() && message.uid != 0 {
+            ui.horizontal(|ui| {
+                for emoji in REACTIONS {
+                    if ui.button(RichText::new(emoji).size(16.0)).clicked() {
+                        chosen = Some(Choice::React(emoji));
+                        ui.close();
+                    }
+                }
+            });
+            ui.separator();
+        }
         let mut item = |ui: &mut Ui, label: &str, choice: Choice| {
             if ui.button(label).clicked() {
                 chosen = Some(choice);
@@ -453,5 +758,5 @@ fn bubble(
         }
         top += CHIP + CHIP_GAP;
     }
-    chosen
+    (chosen, shape)
 }

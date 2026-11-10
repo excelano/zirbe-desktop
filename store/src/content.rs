@@ -3,7 +3,7 @@
 
 use mail_parser::MessagePart;
 
-use crate::model::{Original, Outgoing};
+use crate::model::{Invite, Original, Outgoing};
 
 pub(crate) fn text_of(message: &mail_parser::Message<'_>) -> String {
     if let Some(text) = message.body_text(0)
@@ -34,6 +34,39 @@ fn markup(text: &str) -> bool {
         .collect::<String>()
         .to_lowercase();
     start.starts_with("<!doctype html") || start.starts_with("<html") || start.contains("<body")
+}
+
+pub(crate) fn reaction(message: &mail_parser::Message<'_>) -> Option<String> {
+    if let Some(value) = message.headers().value("X-Zirbe-Reaction")
+        && let Some(text) = value.as_text()
+    {
+        let text = text.trim();
+        let decoded = if text.starts_with("=?") {
+            let header = format!("Subject: {text}\r\n\r\n");
+            mail_parser::MessageParser::default()
+                .parse(header.as_bytes())
+                .and_then(|parsed| parsed.subject().map(str::to_string))
+                .unwrap_or_else(|| text.to_string())
+        } else {
+            text.to_string()
+        };
+        if !decoded.is_empty() {
+            return Some(decoded);
+        }
+    }
+    message
+        .parts()
+        .find(|part| part.is_content_type("text", "vnd.google.email-reaction+json"))
+        .and_then(|part| part.text().map(|text| text.into_owned()))
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|value| value.get("emoji")?.as_str().map(str::to_string))
+}
+
+pub(crate) fn invite(message: &mail_parser::Message<'_>) -> Option<Invite> {
+    message
+        .parts()
+        .filter(|part| part.is_content_type("text", "calendar"))
+        .find_map(|part| crate::invite::parse(&part.text()?))
 }
 
 pub(crate) fn has_html(message: &mail_parser::Message<'_>) -> bool {

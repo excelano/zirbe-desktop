@@ -175,6 +175,8 @@ pub(crate) mod tests {
             partial: false,
             html: false,
             flagged: false,
+            reaction: None,
+            invite: None,
         }
     }
 

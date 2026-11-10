@@ -141,6 +141,31 @@ pub struct Message {
     pub html: bool,
     #[serde(default)]
     pub flagged: bool,
+    #[serde(default)]
+    pub reaction: Option<String>,
+    #[serde(default)]
+    pub invite: Option<Invite>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Invite {
+    pub method: String,
+    pub summary: String,
+    pub start: Option<When>,
+    pub end: Option<When>,
+    pub location: String,
+    pub organizer: String,
+    pub join: Option<String>,
+    pub sequence: u32,
+    pub cancelled: bool,
+    pub answer: Option<(String, String)>,
+    pub ics: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct When {
+    pub value: String,
+    pub zone: Option<String>,
 }
 
 impl Message {
@@ -217,6 +242,7 @@ pub struct Draft {
     pub references: Vec<String>,
     pub attachments: Vec<Outgoing>,
     pub replaces: Option<(String, u32)>,
+    pub reaction: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -126,6 +126,9 @@ fn assemble(
     if let Some(envelope) = envelope {
         builder = builder.envelope(envelope);
     }
+    if let Some(emoji) = &draft.reaction {
+        builder = builder.header(ZirbeReaction(emoji.clone()));
+    }
     if let Some(to) = mailboxes(&draft.to)? {
         builder = builder.mailbox(lettre::message::header::To::from(to));
     }
@@ -156,6 +159,62 @@ fn assemble(
     };
     let message = built.map_err(|error| format!("the message could not be built: {error}"))?;
     Ok((message, id))
+}
+
+#[derive(Clone)]
+struct ZirbeReaction(String);
+
+impl lettre::message::header::Header for ZirbeReaction {
+    fn name() -> lettre::message::header::HeaderName {
+        lettre::message::header::HeaderName::new_from_ascii_str("X-Zirbe-Reaction")
+    }
+
+    fn parse(value: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(ZirbeReaction(value.to_string()))
+    }
+
+    fn display(&self) -> lettre::message::header::HeaderValue {
+        lettre::message::header::HeaderValue::new(Self::name(), self.0.clone())
+    }
+}
+
+pub fn reaction(
+    conversation: &Conversation,
+    account: &Account,
+    target: &Message,
+    emoji: &str,
+) -> Draft {
+    let excerpt: String = {
+        let text = target.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let base = if text.is_empty() {
+            target.subject.trim().to_string()
+        } else {
+            text
+        };
+        if base.chars().count() > 40 {
+            format!(
+                "{}\u{2026}",
+                base.chars().take(40).collect::<String>().trim_end()
+            )
+        } else {
+            base
+        }
+    };
+    let body = if excerpt.is_empty() {
+        format!("Reacted {emoji}")
+    } else {
+        format!("Reacted {emoji} to \u{201C}{excerpt}\u{201D}")
+    };
+    let mut draft = reply(conversation, account, body, None);
+    if let Some(id) = &target.message_id {
+        draft.references = target.references.clone();
+        if draft.references.last() != Some(id) {
+            draft.references.push(id.clone());
+        }
+        draft.in_reply_to = Some(id.clone());
+    }
+    draft.reaction = Some(emoji.to_string());
+    draft
 }
 
 fn content_type(name: &str) -> &'static str {
@@ -318,5 +377,21 @@ mod tests {
         assert!(!raw.to_ascii_lowercase().contains("bcc:"), "{raw}");
         assert!(raw.contains("multipart/mixed"));
         assert!(raw.contains("filename=\"notes.txt\""), "{raw}");
+    }
+
+    #[test]
+    fn a_reaction_round_trips_through_its_header() {
+        let mut target = message("a", &[], "ana@example.com", 1);
+        target.text = "Lunch at noon?".into();
+        let thread = conversation(vec![target.clone()]);
+        let draft = super::reaction(&thread, &account(), &target, "👍");
+        assert_eq!(draft.body, "Reacted 👍 to “Lunch at noon?”");
+        assert_eq!(draft.in_reply_to.as_deref(), Some("<a>"));
+        let (message, _) = build(&draft, &account()).expect("a message");
+        let raw = message.formatted();
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&raw)
+            .expect("parsed");
+        assert_eq!(crate::content::reaction(&parsed).as_deref(), Some("👍"));
     }
 }

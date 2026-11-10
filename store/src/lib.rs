@@ -10,6 +10,7 @@ mod content;
 mod email;
 mod folders;
 mod imap;
+mod invite;
 mod mime;
 mod model;
 mod presets;
@@ -27,10 +28,10 @@ use std::time::Duration;
 use chrono::Utc;
 use tokio::sync::mpsc;
 
-pub use compose::{parse_people, reply};
+pub use compose::{parse_people, reaction, reply};
 pub use model::{
-    Account, Arrival, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Message, Original,
-    Outgoing, Person, Role, Scope, Status,
+    Account, Arrival, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Invite, Message,
+    Original, Outgoing, Person, Role, Scope, Status, When,
 };
 pub use presets::{Preset, for_address};
 pub use search::Query;
@@ -692,7 +693,7 @@ impl Worker {
             let mut fresh: Vec<Arrival> = arrived
                 .iter()
                 .filter_map(|uid| data.inbox.messages.get(uid))
-                .filter(|message| !message.seen)
+                .filter(|message| !message.seen && message.reaction.is_none())
                 .filter(|message| message.from.as_ref().is_none_or(|from| !from.is(me)))
                 .map(|message| Arrival {
                     account: account.key(),

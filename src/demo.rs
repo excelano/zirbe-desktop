@@ -91,6 +91,8 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
                 partial: false,
                 html: !mine,
                 flagged: false,
+                reaction: None,
+                invite: None,
             }
         })
         .collect();
@@ -248,6 +250,39 @@ impl Demo {
                 ],
             )),
         ];
+        let mut conversations = conversations;
+        if let Some(hike) = conversations.iter_mut().find(|c| c.key == "hike") {
+            let start = at(-5, 7, 30).format("%Y%m%dT%H%M%SZ").to_string();
+            let end = at(-5, 13, 0).format("%Y%m%dT%H%M%SZ").to_string();
+            hike.messages[0].invite = Some(zirbe_store::Invite {
+                method: "REQUEST".into(),
+                summary: "Ridge trail hike".into(),
+                start: Some(zirbe_store::When {
+                    value: start,
+                    zone: None,
+                }),
+                end: Some(zirbe_store::When {
+                    value: end,
+                    zone: None,
+                }),
+                location: "North trailhead car park".into(),
+                organizer: "Ana Lopez".into(),
+                join: None,
+                sequence: 0,
+                cancelled: false,
+                answer: None,
+                ics: "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".into(),
+            });
+            let mut thumbs_up = hike.messages[2].clone();
+            thumbs_up.message_id = Some("<hike.reaction@example.com>".into());
+            thumbs_up.in_reply_to = Some("<hike.1@example.com>".into());
+            thumbs_up.reaction = Some("👍".into());
+            thumbs_up.text = "Reacted 👍 to “Yes! I can drive.”".into();
+            thumbs_up.html = false;
+            hike.messages.push(thumbs_up);
+            hike.messages.sort_by_key(|message| message.date);
+            settle(hike);
+        }
         Demo {
             conversations: Mutex::new(Arc::new(conversations)),
         }
@@ -330,6 +365,8 @@ impl MailSource for Demo {
             partial: false,
             html: false,
             flagged: false,
+            reaction: draft.reaction.clone(),
+            invite: None,
         };
         match key.and_then(|key| conversations.iter_mut().find(|c| c.key == key)) {
             Some(conversation) => {

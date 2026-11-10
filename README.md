@@ -40,7 +40,15 @@ it has no subject, suggests addresses from the mail already synced, and can be
 saved to the server's Drafts folder instead of sent; opening a draft from the
 Drafts folder brings it back to finish. A reply that fails to send keeps a
 Retry button, and a note between messages says when someone joins or leaves the
-conversation. If the copy of a sent message cannot be
+conversation. Image attachments show as pictures under their message, fetched
+when the message comes into view. An invitation shows as a card with its time,
+place and organiser, a Join button for Teams, Meet, Zoom and Webex links, and
+Add to Calendar, which hands the invitation to the calendar application; answers
+to it read as a line such as "Ana accepted". The right-click menu also reacts
+to a message with 👍 👎 ❤ 😂 ‼ or ❓, shown at once and sent after five seconds
+unless undone; a reaction is a short reply with an X-Zirbe-Reaction header, the
+same as the iPhone app sends, so each app shows the other's reactions as
+badges, and Gmail's reactions show the same way. If the copy of a sent message cannot be
 saved to the server's Sent folder, the status line says so and Zirbe keeps
 trying at every check for mail. Mail you sent
 is read from the account's Sent folder and sits on the right, so a thread reads

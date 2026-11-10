@@ -64,6 +64,16 @@ enum Purpose {
     Draft { account: String, message: Message },
 }
 
+struct Reacting {
+    conversation: String,
+    account: String,
+    target: Message,
+    emoji: &'static str,
+    at: std::time::Instant,
+}
+
+const UNDO: Duration = Duration::from_secs(5);
+
 struct Sending {
     conversation: String,
     draft: Draft,
@@ -186,12 +196,18 @@ pub struct App {
     expanded: HashMap<String, String>,
     opening_draft: Option<String>,
     known: Option<(usize, Vec<Person>)>,
+    thumbs: HashMap<String, bubbles::Thumb>,
+    thumb_loads: Vec<(String, Reply<Vec<u8>>)>,
+    reacting: Option<Reacting>,
+    reaction_sends: Vec<(String, Reply)>,
     auto_opened: Option<String>,
     adding_account: bool,
     sign_in: SignIn,
     marked: Option<(String, usize)>,
     #[cfg(feature = "screenshot")]
     screenshot: Option<crate::screenshot::Screenshot>,
+    #[cfg(feature = "screenshot")]
+    screenshot_opening: Option<String>,
 }
 
 impl App {
@@ -225,12 +241,18 @@ impl App {
             expanded: HashMap::new(),
             opening_draft: None,
             known: None,
+            thumbs: HashMap::new(),
+            thumb_loads: Vec::new(),
+            reacting: None,
+            reaction_sends: Vec::new(),
             auto_opened: None,
             adding_account: false,
             sign_in: SignIn::default(),
             marked: None,
             #[cfg(feature = "screenshot")]
             screenshot: crate::screenshot::Screenshot::from_environment(),
+            #[cfg(feature = "screenshot")]
+            screenshot_opening: None,
         }
     }
 
@@ -247,6 +269,9 @@ impl App {
                     .iter()
                     .find(|conversation| conversation.title == title)
                     .map(|conversation| conversation.key.clone());
+                if self.selected.is_none() {
+                    self.screenshot_opening = Some(title.to_string());
+                }
             }
         }
     }
@@ -318,6 +343,74 @@ impl App {
             Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
             Err(TryRecvError::Disconnected) => self.sending = None,
         }
+    }
+
+    fn poll_thumbs(&mut self, ctx: &egui::Context) {
+        let mut waiting = Vec::new();
+        for (key, reply) in std::mem::take(&mut self.thumb_loads) {
+            match arrived(&reply, ctx) {
+                None => waiting.push((key, reply)),
+                Some(result) => {
+                    let thumb = result
+                        .ok()
+                        .and_then(|bytes| image::load_from_memory(&bytes).ok())
+                        .map(|image| {
+                            let small = image.thumbnail(480, 480).to_rgba8();
+                            let size = [small.width() as usize, small.height() as usize];
+                            let pixels =
+                                egui::ColorImage::from_rgba_unmultiplied(size, small.as_raw());
+                            bubbles::Thumb::Ready(ctx.load_texture(
+                                &key,
+                                pixels,
+                                egui::TextureOptions::LINEAR,
+                            ))
+                        })
+                        .unwrap_or(bubbles::Thumb::Failed);
+                    self.thumbs.insert(key, thumb);
+                }
+            }
+        }
+        self.thumb_loads = waiting;
+    }
+
+    fn flush_reaction(&mut self) {
+        let Some(reacting) = self.reacting.take() else {
+            return;
+        };
+        let conversations = self.source.mail().conversations();
+        let (Some(conversation), Some(account)) = (
+            conversations
+                .iter()
+                .find(|c| c.key == reacting.conversation),
+            self.account(&reacting.account),
+        ) else {
+            return;
+        };
+        let draft = zirbe_store::reaction(conversation, &account, &reacting.target, reacting.emoji);
+        self.reaction_sends
+            .push((reacting.conversation, self.source.mail().send(draft)));
+    }
+
+    fn poll_reactions(&mut self, ctx: &egui::Context) {
+        if let Some(reacting) = &self.reacting {
+            let left = UNDO.saturating_sub(reacting.at.elapsed());
+            if left.is_zero() {
+                self.flush_reaction();
+            } else {
+                ctx.request_repaint_after(left.min(Duration::from_millis(250)));
+            }
+        }
+        let mut waiting = Vec::new();
+        for (key, reply) in std::mem::take(&mut self.reaction_sends) {
+            match arrived(&reply, ctx) {
+                None => waiting.push((key, reply)),
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    self.failure = Some((key, format!("The reaction was not sent: {error}")));
+                }
+            }
+        }
+        self.reaction_sends = waiting;
     }
 
     fn poll_fetching(&mut self, ctx: &egui::Context) {
@@ -1390,6 +1483,7 @@ impl App {
                     .map_or(conversation.account.as_str(), |account| {
                         account.address.as_str()
                     });
+                let wanted = std::cell::RefCell::new(Vec::new());
                 let action = ScrollArea::vertical()
                     .id_salt(&conversation.key)
                     .stick_to_bottom(true)
@@ -1406,6 +1500,20 @@ impl App {
                             &bubbles::View {
                                 images_by_default: self.settings.load_images,
                                 expanded: &self.expanded,
+                                thumbs: &self.thumbs,
+                                wanted: &wanted,
+                                pending: self
+                                    .reacting
+                                    .as_ref()
+                                    .filter(|reacting| reacting.conversation == conversation.key)
+                                    .and_then(|reacting| {
+                                        reacting
+                                            .target
+                                            .message_id
+                                            .as_deref()
+                                            .map(|id| (id, reacting.emoji))
+                                    }),
+                                clock: self.clock,
                                 found: &found,
                                 current,
                                 scroll,
@@ -1413,8 +1521,44 @@ impl App {
                         )
                     })
                     .inner;
+                for (message, index) in wanted.into_inner() {
+                    let key = bubbles::thumb_key(&message, index);
+                    if !self.thumbs.contains_key(&key) {
+                        self.thumbs.insert(key.clone(), bubbles::Thumb::Loading);
+                        self.thumb_loads.push((
+                            key,
+                            self.source
+                                .mail()
+                                .attachment(&conversation.account, &message, index),
+                        ));
+                    }
+                }
                 if let Some(Action { message, choice }) = action {
                     match choice {
+                        Choice::React(emoji) => {
+                            self.flush_reaction();
+                            self.reacting = Some(Reacting {
+                                conversation: conversation.key.clone(),
+                                account: conversation.account.clone(),
+                                target: message,
+                                emoji,
+                                at: std::time::Instant::now(),
+                            });
+                        }
+                        Choice::Join(link) => {
+                            let _ = open::that_detached(link);
+                        }
+                        Choice::AddToCalendar => {
+                            if let Some(invite) = &message.invite
+                                && let Err(error) =
+                                    files::open("invitation.ics", invite.ics.as_bytes())
+                            {
+                                self.failure = Some((
+                                    conversation.key.clone(),
+                                    format!("The invitation did not open: {error}"),
+                                ));
+                            }
+                        }
                         Choice::Email { images } => {
                             self.open_reading(&conversation, message, images)
                         }
@@ -1593,6 +1737,9 @@ impl App {
         let name = |index: usize| message.attachments.get(index).cloned().unwrap_or_default();
         let work = match choice {
             Choice::Email { .. }
+            | Choice::React(_)
+            | Choice::Join(_)
+            | Choice::AddToCalendar
             | Choice::ReplyTo
             | Choice::Forward
             | Choice::Copy
@@ -1650,6 +1797,26 @@ impl App {
                         .color(palette.secondary),
                 );
             });
+            ui.add_space(4.0);
+        }
+        if let Some(reacting) = &self.reacting
+            && reacting.conversation == key
+        {
+            let mut undo = false;
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Reacted {}", reacting.emoji))
+                        .size(12.0)
+                        .color(palette.secondary),
+                );
+                let link =
+                    egui::Button::new(RichText::new("Undo").size(12.0).color(palette.accent))
+                        .frame(false);
+                undo = ui.add(link).clicked();
+            });
+            if undo {
+                self.reacting = None;
+            }
             ui.add_space(4.0);
         }
         let sending = self
@@ -1993,9 +2160,15 @@ impl eframe::App for App {
         if let Some(screenshot) = &mut self.screenshot {
             screenshot.tick(&ctx);
         }
+        #[cfg(feature = "screenshot")]
+        if let Some(title) = self.screenshot_opening.take() {
+            self.open_for_screenshot(&title);
+        }
         self.shortcuts(&ctx);
         self.poll_sending(&ctx);
         self.poll_fetching(&ctx);
+        self.poll_thumbs(&ctx);
+        self.poll_reactions(&ctx);
         let needs_account = match &self.source {
             Source::Live(store) => {
                 store.accounts().is_empty() && matches!(store.status(), Status::NoAccounts)
