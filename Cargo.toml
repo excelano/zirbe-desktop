@@ -4,7 +4,7 @@ members = ["store"]
 [package]
 name = "zirbe"
 description = "Email that reads like a conversation"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["David M. Anderson"]
 license = "MIT"
