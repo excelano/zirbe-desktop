@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::model::{Conversation, Message, Person};
+use crate::model::{Conversation, Copy, Message, Person};
 use crate::subject;
 
 pub(crate) fn conversations(
@@ -12,7 +12,6 @@ pub(crate) fn conversations(
     started: &BTreeSet<String>,
     messages: Vec<Message>,
 ) -> Vec<Conversation> {
-    let messages = without_duplicates(messages);
     let mut parent: Vec<usize> = (0..messages.len()).collect();
     let mut owner: HashMap<&str, usize> = HashMap::new();
     for (index, message) in messages.iter().enumerate() {
@@ -33,34 +32,40 @@ pub(crate) fn conversations(
     let mut found: Vec<Conversation> = groups
         .into_values()
         .map(|members| {
-            let in_inbox = members.iter().any(|&i| {
-                messages[i].in_inbox()
-                    || messages[i]
+            let copies: Vec<&Message> = members.iter().map(|&i| &messages[i]).collect();
+            let in_inbox = copies.iter().any(|message| {
+                message.in_inbox()
+                    || message
                         .message_id
                         .as_ref()
                         .is_some_and(|id| started.contains(id))
             });
-            let mut thread: Vec<Message> = members.iter().map(|&i| messages[i].clone()).collect();
+            let mut thread = without_duplicates(&copies);
             thread.sort_by_key(|message| message.date);
-            conversation(account, me, thread, in_inbox)
+            let mut found = conversation(account, me, thread, in_inbox);
+            found.flagged = copies.iter().any(|message| message.flagged);
+            found.copies = copies.into_iter().map(Copy::of).collect();
+            found
         })
         .collect();
     found.sort_by_key(|conversation| std::cmp::Reverse(conversation.latest()));
     found
 }
 
-fn without_duplicates(messages: Vec<Message>) -> Vec<Message> {
+fn without_duplicates(copies: &[&Message]) -> Vec<Message> {
     let mut seen = HashSet::new();
-    let mut kept: Vec<Message> = Vec::with_capacity(messages.len());
-    let mut ordered = messages;
+    let mut ordered: Vec<&Message> = copies.to_vec();
     ordered.sort_by_key(|message| !message.in_inbox());
-    for message in ordered {
-        match &message.message_id {
-            Some(id) if !seen.insert(id.clone()) => {}
-            _ => kept.push(message),
-        }
-    }
-    kept
+    ordered
+        .into_iter()
+        .filter(|message| {
+            message
+                .message_id
+                .as_ref()
+                .is_none_or(|id| seen.insert(id.clone()))
+        })
+        .cloned()
+        .collect()
 }
 
 fn ids(message: &Message) -> impl Iterator<Item = &str> {
@@ -130,6 +135,9 @@ fn conversation(account: &str, me: &str, messages: Vec<Message>, in_inbox: bool)
         messages,
         unread,
         in_inbox,
+        flagged: false,
+        pinned: false,
+        copies: Vec::new(),
     }
 }
 
@@ -166,6 +174,7 @@ pub(crate) mod tests {
             seen: false,
             partial: false,
             html: false,
+            flagged: false,
         }
     }
 
@@ -245,5 +254,26 @@ pub(crate) mod tests {
         let started = BTreeSet::from(["<new>".to_string()]);
         let found = conversations("me@example.org", "me@example.org", &started, vec![opened]);
         assert!(found[0].in_inbox);
+    }
+
+    #[test]
+    fn a_message_filed_twice_shows_once_but_belongs_to_both_folders() {
+        let mut sent = message("a", &[], "me@example.org", 1);
+        sent.mailbox = "INBOX.Sent".into();
+        let mut archived = message("a", &[], "me@example.org", 1);
+        archived.mailbox = "INBOX.Archive".into();
+        let found = conversations(
+            "me@example.org",
+            "me@example.org",
+            &BTreeSet::new(),
+            vec![sent, archived],
+        );
+        assert_eq!(found[0].messages.len(), 1);
+        let archive = Scope::Mailbox {
+            account: "me@example.org".into(),
+            name: "INBOX.Archive".into(),
+        };
+        assert!(archive.holds(&found[0]));
+        assert!(!found[0].in_inbox);
     }
 }

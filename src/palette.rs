@@ -16,6 +16,7 @@ pub struct Palette {
     pub received: Color32,
     pub selected: Color32,
     pub failure: Color32,
+    pub flag: Color32,
 }
 
 pub const LIGHT: Palette = Palette {
@@ -30,6 +31,7 @@ pub const LIGHT: Palette = Palette {
     received: Color32::from_rgb(0xE9, 0xE9, 0xEB),
     selected: Color32::from_rgb(0xD5, 0xE6, 0xDC),
     failure: Color32::from_rgb(0xC6, 0x28, 0x28),
+    flag: Color32::from_rgb(0xE0, 0x7A, 0x10),
 };
 
 pub const DARK: Palette = Palette {
@@ -44,6 +46,7 @@ pub const DARK: Palette = Palette {
     received: Color32::from_rgb(0x48, 0x48, 0x4A),
     selected: Color32::from_rgb(0x1F, 0x3D, 0x30),
     failure: Color32::from_rgb(0xFF, 0x8A, 0x80),
+    flag: Color32::from_rgb(0xFF, 0xA0, 0x40),
 };
 
 pub fn monogram(seed: &str) -> Color32 {

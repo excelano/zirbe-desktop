@@ -172,7 +172,7 @@ impl Connection {
             return Ok(());
         }
         let first = selected.exists.saturating_sub(WINDOW - 1).max(1);
-        let present: Vec<(u32, bool, u32)> = self
+        let present: Vec<(u32, (bool, bool), u32)> = self
             .session
             .fetch(format!("{first}:*"), "(UID FLAGS RFC822.SIZE)")
             .await
@@ -181,15 +181,24 @@ impl Connection {
             .await
             .map_err(failed(host))?
             .iter()
-            .filter_map(|fetch| Some((fetch.uid?, seen(fetch), fetch.size.unwrap_or(0))))
+            .filter_map(|fetch| {
+                Some((
+                    fetch.uid?,
+                    (seen(fetch), flagged(fetch)),
+                    fetch.size.unwrap_or(0),
+                ))
+            })
             .collect();
         let uids: BTreeSet<u32> = present.iter().map(|(uid, _, _)| *uid).collect();
         mailbox.messages.retain(|uid, _| uids.contains(uid));
         let mut whole = Vec::new();
         let mut large = Vec::new();
-        for &(uid, is_seen, size) in &present {
+        for &(uid, (is_seen, is_flagged), size) in &present {
             match mailbox.messages.get_mut(&uid) {
-                Some(message) => message.seen = is_seen,
+                Some(message) => {
+                    message.seen = is_seen;
+                    message.flagged = is_flagged;
+                }
                 None if size <= WHOLE_UP_TO => whole.push(uid),
                 None => large.push(uid),
             }
@@ -263,7 +272,8 @@ impl Connection {
                     })
                 }),
             };
-            if let Some(message) = parsed {
+            if let Some(mut message) = parsed {
+                message.flagged = flagged(fetch);
                 mailbox.messages.insert(uid, message);
             }
         }
@@ -286,29 +296,98 @@ impl Connection {
             .ok_or_else(|| format!("{host} no longer has this message"))
     }
 
-    pub async fn mark_seen(
+    pub async fn set_flag(
         &mut self,
         host: &str,
         mailbox: &str,
         uids: &[u32],
+        flag: &str,
+        on: bool,
     ) -> Result<(), String> {
         if uids.is_empty() {
             return Ok(());
         }
         self.session.select(mailbox).await.map_err(failed(host))?;
-        let set = uids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
+        let sign = if on { '+' } else { '-' };
+        self.store(host, uids, &format!("{sign}FLAGS.SILENT ({flag})"))
+            .await
+    }
+
+    async fn store(&mut self, host: &str, uids: &[u32], query: &str) -> Result<(), String> {
         let _: Vec<Fetch> = self
             .session
-            .uid_store(set, "+FLAGS.SILENT (\\Seen)")
+            .uid_store(uid_set(uids), query)
             .await
             .map_err(failed(host))?
             .try_collect()
             .await
             .map_err(failed(host))?;
+        Ok(())
+    }
+
+    async fn expunge(&mut self, host: &str, uids: &[u32]) -> Result<(), String> {
+        let capabilities = self.session.capabilities().await.map_err(failed(host))?;
+        if capabilities.has_str("UIDPLUS") {
+            let _: Vec<_> = self
+                .session
+                .uid_expunge(uid_set(uids))
+                .await
+                .map_err(failed(host))?
+                .try_collect()
+                .await
+                .map_err(failed(host))?;
+        } else {
+            let _: Vec<_> = self
+                .session
+                .expunge()
+                .await
+                .map_err(failed(host))?
+                .try_collect()
+                .await
+                .map_err(failed(host))?;
+        }
+        Ok(())
+    }
+
+    pub async fn move_to(
+        &mut self,
+        host: &str,
+        mailbox: &str,
+        uids: &[u32],
+        destination: &str,
+    ) -> Result<(), String> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        self.session.select(mailbox).await.map_err(failed(host))?;
+        let capabilities = self.session.capabilities().await.map_err(failed(host))?;
+        if capabilities.has_str("MOVE") {
+            return self
+                .session
+                .uid_mv(uid_set(uids), destination)
+                .await
+                .map_err(failed(host));
+        }
+        self.session
+            .uid_copy(uid_set(uids), destination)
+            .await
+            .map_err(failed(host))?;
+        self.store(host, uids, "+FLAGS.SILENT (\\Deleted)").await?;
+        self.expunge(host, uids).await
+    }
+
+    pub async fn delete(&mut self, host: &str, mailbox: &str, uids: &[u32]) -> Result<(), String> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        self.session.select(mailbox).await.map_err(failed(host))?;
+        self.store(host, uids, "+FLAGS.SILENT (\\Deleted)").await?;
+        self.expunge(host, uids).await
+    }
+
+    pub async fn create(&mut self, host: &str, mailbox: &str) -> Result<(), String> {
+        self.session.create(mailbox).await.map_err(failed(host))?;
+        let _ = self.session.subscribe(mailbox).await;
         Ok(())
     }
 
@@ -318,6 +397,17 @@ impl Connection {
             .await
             .map_err(failed(host))
     }
+}
+
+fn uid_set(uids: &[u32]) -> String {
+    uids.iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn flagged(fetch: &Fetch) -> bool {
+    fetch.flags().any(|flag| flag == Flag::Flagged)
 }
 
 fn seen(fetch: &Fetch) -> bool {

@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod actions;
 mod cache;
 mod compose;
 mod content;
@@ -27,7 +28,8 @@ use tokio::sync::mpsc;
 
 pub use compose::{parse_people, reply};
 pub use model::{
-    Account, Conversation, Draft, FolderInfo, INBOX, Message, Person, Role, Scope, Status,
+    Account, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Message, Person, Role, Scope,
+    Status,
 };
 pub use presets::{Preset, for_address};
 
@@ -39,6 +41,8 @@ const SYNC_EVERY: Duration = Duration::from_secs(120);
 
 pub type Reply<T = ()> = reply::Receiver<Result<T, String>>;
 
+type Target = (String, u32);
+
 pub trait MailSource {
     fn status(&self) -> Status;
     fn accounts(&self) -> Vec<Account>;
@@ -47,6 +51,7 @@ pub trait MailSource {
     fn open(&self, scope: &Scope);
     fn send(&self, draft: Draft) -> Reply;
     fn mark_read(&self, conversation: &Conversation);
+    fn change(&self, conversations: &[Conversation], scope: &Scope, change: Change);
     fn refresh(&self);
     fn email(&self, account: &str, message: &Message) -> Reply<String>;
     fn attachment(&self, account: &str, message: &Message, index: usize) -> Reply<Vec<u8>>;
@@ -85,9 +90,12 @@ enum Command {
         draft: Draft,
         reply: reply::Sender<Result<(), String>>,
     },
-    MarkRead {
+    Change {
         account: String,
-        uids: Vec<(String, u32)>,
+        keys: Vec<String>,
+        ids: Vec<String>,
+        change: Change,
+        targets: Vec<Target>,
     },
     Email {
         account: String,
@@ -205,16 +213,41 @@ impl MailSource for Store {
     }
 
     fn mark_read(&self, conversation: &Conversation) {
-        let uids: Vec<(String, u32)> = conversation
-            .messages
-            .iter()
-            .filter(|message| !message.seen && message.uid != 0)
-            .map(|message| (message.mailbox.clone(), message.uid))
-            .collect();
-        if !uids.is_empty() {
-            let _ = self.commands.send(Command::MarkRead {
-                account: conversation.account.clone(),
-                uids,
+        self.change(
+            std::slice::from_ref(conversation),
+            &Scope::AllInboxes,
+            Change::Read(true),
+        );
+    }
+
+    fn change(&self, conversations: &[Conversation], scope: &Scope, change: Change) {
+        let mut by_account: BTreeMap<&str, Vec<&Conversation>> = BTreeMap::new();
+        for conversation in conversations {
+            by_account
+                .entry(&conversation.account)
+                .or_default()
+                .push(conversation);
+        }
+        for (account, conversations) in by_account {
+            let keys = conversations.iter().map(|c| c.key.clone()).collect();
+            let ids = conversations
+                .iter()
+                .flat_map(|c| &c.copies)
+                .filter_map(|copy| copy.message_id.clone())
+                .collect();
+            let targets: Vec<Target> = conversations
+                .iter()
+                .flat_map(|c| actions::targets(c, scope, &change))
+                .collect();
+            if targets.is_empty() && !matches!(change, Change::Pin(_)) {
+                continue;
+            }
+            let _ = self.commands.send(Command::Change {
+                account: account.to_string(),
+                keys,
+                ids,
+                change: change.clone(),
+                targets,
             });
         }
     }
@@ -328,7 +361,13 @@ impl Worker {
                 }
             }
             Command::Send { draft, reply } => self.send(draft, reply).await,
-            Command::MarkRead { account, uids } => self.mark_read(&account, &uids).await,
+            Command::Change {
+                account,
+                keys,
+                ids,
+                change,
+                targets,
+            } => self.change(&account, keys, ids, change, targets).await,
             Command::Email {
                 account,
                 mailbox,
@@ -373,16 +412,25 @@ impl Worker {
             .iter()
             .filter_map(|account| {
                 let data = self.data.get(&account.key())?;
-                Some(thread::conversations(
+                let mut found = thread::conversations(
                     &account.key(),
                     &account.address,
                     &data.started,
                     data.messages(),
-                ))
+                );
+                for conversation in &mut found {
+                    conversation.pinned = data.pinned.contains(&conversation.key);
+                }
+                Some(found)
             })
             .flatten()
             .collect();
-        conversations.sort_by_key(|conversation| std::cmp::Reverse(conversation.latest()));
+        conversations.sort_by_key(|conversation| {
+            (
+                !conversation.pinned,
+                std::cmp::Reverse(conversation.latest()),
+            )
+        });
         let folders = self
             .data
             .iter()
@@ -584,39 +632,146 @@ impl Worker {
         }
     }
 
-    async fn mark_read(&mut self, account: &str, uids: &[(String, u32)]) {
+    async fn change(
+        &mut self,
+        account: &str,
+        keys: Vec<String>,
+        ids: Vec<String>,
+        change: Change,
+        targets: Vec<Target>,
+    ) {
         let Some(known) = self.account(account) else {
             return;
         };
         let Some(data) = self.data.get_mut(account) else {
             return;
         };
+        let destination = match &change {
+            Change::Archive => Some(
+                actions::role_folder(&data.folders, Role::Archive)
+                    .ok_or_else(|| actions::new_folder_name(&data.folders, "Archive")),
+            ),
+            Change::Trash | Change::Junk => {
+                let role = if change == Change::Trash {
+                    Role::Trash
+                } else {
+                    Role::Junk
+                };
+                match actions::role_folder(&data.folders, role) {
+                    Some(name) => Some(Ok(name)),
+                    None => {
+                        let what = if role == Role::Trash { "Trash" } else { "Junk" };
+                        self.set_status(Status::Failed(format!(
+                            "{}: this account has no {what} folder",
+                            known.address
+                        )));
+                        return;
+                    }
+                }
+            }
+            Change::Move(name) => Some(Ok(name.clone())),
+            _ => None,
+        };
         let mut by_mailbox: BTreeMap<String, Vec<u32>> = BTreeMap::new();
-        for (name, uid) in uids {
+        for (name, uid) in &targets {
             let Some(mailbox) = data.mailbox_mut(name) else {
                 continue;
             };
-            if let Some(message) = mailbox.messages.get_mut(uid) {
-                message.seen = true;
-                by_mailbox.entry(name.clone()).or_default().push(*uid);
+            let Some(message) = mailbox.messages.get_mut(uid) else {
+                continue;
+            };
+            let was_unread = !message.seen;
+            match &change {
+                Change::Flag(on) => message.flagged = *on,
+                Change::Read(on) => message.seen = *on,
+                _ => {
+                    mailbox.messages.remove(uid);
+                }
+            }
+            by_mailbox.entry(name.clone()).or_default().push(*uid);
+            let unread_change: i64 = match &change {
+                Change::Read(true) if was_unread => -1,
+                Change::Read(false) if !was_unread => 1,
+                Change::Flag(_) | Change::Read(_) | Change::Pin(_) => 0,
+                _ if was_unread => -1,
+                _ => 0,
+            };
+            if let Some(folder) = data.folders.iter_mut().find(|folder| &folder.name == name) {
+                folder.unread = (folder.unread as i64 + unread_change).max(0) as u32;
             }
         }
-        for folder in &mut data.folders {
-            if let Some(marked) = by_mailbox.get(&folder.name) {
-                folder.unread = folder.unread.saturating_sub(marked.len() as u32);
+        if matches!(
+            change,
+            Change::Archive | Change::Trash | Change::Junk | Change::Move(_) | Change::Delete
+        ) {
+            for id in &ids {
+                data.started.remove(id);
+            }
+        }
+        if let Change::Pin(on) = &change {
+            for key in keys {
+                if *on {
+                    data.pinned.insert(key);
+                } else {
+                    data.pinned.remove(&key);
+                }
             }
         }
         self.save_data(account);
         self.publish();
-        if let Ok(password) = Self::password(account).await
-            && let Ok(mut connection) = Connection::open(&known, &password).await
-        {
-            for (name, uids) in &by_mailbox {
-                let _ = connection
-                    .mark_seen(known.imap_host.trim(), name, uids)
-                    .await;
+        if by_mailbox.is_empty() {
+            return;
+        }
+        let host = known.imap_host.trim().to_string();
+        let result: Result<bool, String> = async {
+            let password = Self::password(account).await?;
+            let mut connection = Connection::open(&known, &password).await?;
+            let outcome = async {
+                let mut created = false;
+                let destination = match destination {
+                    Some(Ok(name)) => Some(name),
+                    Some(Err(name)) => {
+                        connection.create(&host, &name).await?;
+                        created = true;
+                        Some(name)
+                    }
+                    None => None,
+                };
+                for (mailbox, uids) in &by_mailbox {
+                    match (&change, &destination) {
+                        (Change::Flag(on), _) => {
+                            connection
+                                .set_flag(&host, mailbox, uids, "\\Flagged", *on)
+                                .await?
+                        }
+                        (Change::Read(on), _) => {
+                            connection
+                                .set_flag(&host, mailbox, uids, "\\Seen", *on)
+                                .await?
+                        }
+                        (Change::Delete, _) => connection.delete(&host, mailbox, uids).await?,
+                        (_, Some(destination)) => {
+                            connection
+                                .move_to(&host, mailbox, uids, destination)
+                                .await?
+                        }
+                        _ => {}
+                    }
+                }
+                Ok::<bool, String>(created)
             }
+            .await;
             connection.close().await;
+            outcome
+        }
+        .await;
+        match result {
+            Ok(true) => self.sync_accounts(vec![known]).await,
+            Ok(false) => {}
+            Err(error) => {
+                self.set_status(Status::Failed(format!("{}: {error}", known.address)));
+                self.sync_accounts(vec![known]).await;
+            }
         }
     }
 

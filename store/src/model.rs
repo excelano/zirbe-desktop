@@ -82,7 +82,29 @@ pub enum Scope {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Change {
+    Archive,
+    Trash,
+    Junk,
+    Move(String),
+    Delete,
+    Flag(bool),
+    Read(bool),
+    Pin(bool),
+}
+
 impl Scope {
+    pub fn shows(&self, mailbox: &str) -> bool {
+        match self {
+            Scope::AllInboxes => mailbox.eq_ignore_ascii_case(INBOX),
+            Scope::Mailbox { name, .. } if name.eq_ignore_ascii_case(INBOX) => {
+                mailbox.eq_ignore_ascii_case(INBOX)
+            }
+            Scope::Mailbox { name, .. } => mailbox == name,
+        }
+    }
+
     pub fn holds(&self, conversation: &Conversation) -> bool {
         match self {
             Scope::AllInboxes => conversation.in_inbox,
@@ -91,10 +113,7 @@ impl Scope {
                     && if name.eq_ignore_ascii_case(INBOX) {
                         conversation.in_inbox
                     } else {
-                        conversation
-                            .messages
-                            .iter()
-                            .any(|message| &message.mailbox == name)
+                        conversation.copies.iter().any(|copy| &copy.mailbox == name)
                     }
             }
         }
@@ -120,6 +139,8 @@ pub struct Message {
     pub partial: bool,
     #[serde(default)]
     pub html: bool,
+    #[serde(default)]
+    pub flagged: bool,
 }
 
 impl Message {
@@ -137,6 +158,32 @@ pub struct Conversation {
     pub messages: Vec<Message>,
     pub unread: usize,
     pub in_inbox: bool,
+    pub flagged: bool,
+    pub pinned: bool,
+    pub copies: Vec<Copy>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Copy {
+    pub mailbox: String,
+    pub uid: u32,
+    pub message_id: Option<String>,
+    pub sender: Option<String>,
+    pub seen: bool,
+    pub flagged: bool,
+}
+
+impl Copy {
+    pub fn of(message: &Message) -> Copy {
+        Copy {
+            mailbox: message.mailbox.clone(),
+            uid: message.uid,
+            message_id: message.message_id.clone(),
+            sender: message.from.as_ref().map(|from| from.address.clone()),
+            seen: message.seen,
+            flagged: message.flagged,
+        }
+    }
 }
 
 impl Conversation {

@@ -153,12 +153,29 @@ pub fn row(
         10.0,
         right - left - date_width - 8.0,
     );
+    let mut marks_width = 0.0;
+    for (mark, color) in [
+        (conversation.flagged, "⚑", palette.flag),
+        (conversation.pinned, "📌", palette.secondary),
+    ]
+    .into_iter()
+    .filter(|(shown, _, _)| *shown)
+    .map(|(_, mark, color)| (mark, color))
+    {
+        let galley = painter.layout_no_wrap(mark.into(), FontId::proportional(12.0), color);
+        marks_width += galley.size().x + 4.0;
+        painter.galley(
+            pos2(right - marks_width + 4.0, rect.top() + 30.0),
+            galley,
+            color,
+        );
+    }
     line(
         members(conversation),
         12.5,
         palette.secondary,
         30.0,
-        right - left,
+        right - left - marks_width,
     );
     let account = conversation.account.as_str();
     line(

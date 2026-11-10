@@ -17,7 +17,13 @@ servers you sign in to.
 The window lists your conversations beside the one that is open. The list
 starts on All Inboxes, every account's inbox together, and the menu at its top
 switches to one account's folder instead; a conversation shows in each folder
-holding one of its messages, always as the whole thread. Mail you sent
+holding one of its messages, always as the whole thread. A conversation can be
+archived, trashed, moved, sent to Junk, flagged, pinned to the top or marked
+read or unread from the buttons above it, from its right-click menu, or with
+E for Archive, Delete for Trash and Shift+U for read or unread; Ctrl-click and
+Shift-click pick several at once, and Unread at the foot of the list hides the
+ones already read. Archive makes an Archive folder if the account has none, and
+Delete inside Trash removes for good after asking. Mail you sent
 is read from the account's Sent folder and sits on the right, so a thread reads
 the same whichever program you answered it from. A reply goes to everyone in
 the conversation and carries the threading headers, so it stays in the thread

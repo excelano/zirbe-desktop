@@ -78,6 +78,7 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
         seen: fetched.seen,
         partial,
         html,
+        flagged: false,
     })
 }
 

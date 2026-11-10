@@ -30,6 +30,7 @@ pub(crate) struct AccountData {
     pub folders: Vec<FolderInfo>,
     pub unfiled: Vec<Message>,
     pub started: BTreeSet<String>,
+    pub pinned: BTreeSet<String>,
 }
 
 impl AccountData {

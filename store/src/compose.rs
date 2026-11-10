@@ -147,6 +147,9 @@ mod tests {
             messages,
             unread: 0,
             in_inbox: true,
+            flagged: false,
+            pinned: false,
+            copies: Vec::new(),
         }
     }
 

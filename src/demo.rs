@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use chrono::{DateTime, Duration, Local, NaiveTime, TimeZone, Utc};
 use zirbe_store::{
-    Account, Conversation, Draft, FolderInfo, MailSource, Message, Person, Reply, Role, Scope,
-    Status,
+    Account, Change, Conversation, Copy, Draft, FolderInfo, MailSource, Message, Person, Reply,
+    Role, Scope, Status,
 };
 
 const ME: &str = "sam@example.com";
@@ -90,20 +90,32 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
                 seen: line.seen,
                 partial: false,
                 html: !mine,
+                flagged: false,
             }
         })
         .collect();
-    let unread = messages.iter().filter(|message| !message.seen).count();
-    let in_inbox = messages.iter().any(Message::in_inbox);
-    Conversation {
+    let mut found = Conversation {
         key: key.to_string(),
         account: ME.to_string(),
         title: title.to_string(),
         members,
         messages,
-        unread,
-        in_inbox,
-    }
+        unread: 0,
+        in_inbox: false,
+        flagged: false,
+        pinned: false,
+        copies: Vec::new(),
+    };
+    settle(&mut found);
+    found
+}
+
+fn settle(conversation: &mut Conversation) {
+    let messages = &conversation.messages;
+    conversation.unread = messages.iter().filter(|message| !message.seen).count();
+    conversation.in_inbox |= messages.iter().any(Message::in_inbox);
+    conversation.flagged = messages.iter().any(|message| message.flagged);
+    conversation.copies = messages.iter().map(Copy::of).collect();
 }
 
 fn archived(mut conversation: Conversation) -> Conversation {
@@ -113,6 +125,7 @@ fn archived(mut conversation: Conversation) -> Conversation {
         }
     }
     conversation.in_inbox = false;
+    settle(&mut conversation);
     conversation
 }
 
@@ -273,6 +286,7 @@ impl MailSource for Demo {
             folder("Drafts", 0, Some(Role::Drafts), 0),
             folder("Sent", 0, Some(Role::Sent), 0),
             folder("Archive", 0, Some(Role::Archive), 0),
+            folder("Junk", 0, Some(Role::Junk), 0),
             folder("Trash", 0, Some(Role::Trash), 0),
             folder("Projects", 0, None, 0),
             folder("Projects/Zirbe", 1, None, 0),
@@ -315,14 +329,19 @@ impl MailSource for Demo {
             seen: true,
             partial: false,
             html: false,
+            flagged: false,
         };
         match key.and_then(|key| conversations.iter_mut().find(|c| c.key == key)) {
-            Some(conversation) => conversation.messages.push(message),
+            Some(conversation) => {
+                conversation.messages.push(message);
+                settle(conversation);
+            }
             None => {
                 let members = draft.to.iter().chain(&draft.cc).cloned().collect();
                 let mut started = conversation(&draft.subject, &draft.subject, members, Vec::new());
                 started.messages.push(message);
                 started.in_inbox = true;
+                settle(&mut started);
                 conversations.push(started);
             }
         }
@@ -334,14 +353,72 @@ impl MailSource for Demo {
     }
 
     fn mark_read(&self, conversation: &Conversation) {
+        self.change(
+            std::slice::from_ref(conversation),
+            &Scope::AllInboxes,
+            Change::Read(true),
+        );
+    }
+
+    fn change(&self, chosen: &[Conversation], scope: &Scope, change: Change) {
         let mut guard = self.conversations.lock().expect("demo lock");
         let mut conversations: Vec<Conversation> = guard.as_ref().clone();
-        if let Some(found) = conversations.iter_mut().find(|c| c.key == conversation.key) {
-            for message in &mut found.messages {
-                message.seen = true;
+        for conversation in conversations
+            .iter_mut()
+            .filter(|conversation| chosen.iter().any(|c| c.key == conversation.key))
+        {
+            let destination = match &change {
+                Change::Archive => Some("Archive".to_string()),
+                Change::Trash => Some("Trash".to_string()),
+                Change::Junk => Some("Junk".to_string()),
+                Change::Move(name) => Some(name.clone()),
+                _ => None,
+            };
+            let latest_received = conversation
+                .messages
+                .iter()
+                .rposition(|message| message.from.as_ref().is_some_and(|from| !from.is(ME)));
+            match &change {
+                Change::Flag(on) => {
+                    if let Some(last) = conversation.messages.last_mut() {
+                        last.flagged = *on;
+                    }
+                    if !on {
+                        conversation
+                            .messages
+                            .iter_mut()
+                            .for_each(|m| m.flagged = false);
+                    }
+                }
+                Change::Read(true) => conversation.messages.iter_mut().for_each(|m| m.seen = true),
+                Change::Read(false) => {
+                    if let Some(index) = latest_received {
+                        conversation.messages[index].seen = false;
+                    }
+                }
+                Change::Pin(on) => conversation.pinned = *on,
+                Change::Delete => conversation
+                    .messages
+                    .retain(|message| !scope.shows(&message.mailbox)),
+                _ => {}
             }
-            found.unread = 0;
+            if let Some(destination) = destination {
+                for message in &mut conversation.messages {
+                    if scope.shows(&message.mailbox) {
+                        message.mailbox = destination.clone();
+                    }
+                }
+                conversation.in_inbox = false;
+            }
+            settle(conversation);
         }
+        conversations.retain(|conversation| !conversation.messages.is_empty());
+        conversations.sort_by_key(|conversation| {
+            (
+                !conversation.pinned,
+                std::cmp::Reverse(conversation.latest()),
+            )
+        });
         *guard = Arc::new(conversations);
     }
 

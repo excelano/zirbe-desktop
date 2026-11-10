@@ -1,16 +1,17 @@
 // Author: David M. Anderson
 // Built with AI assistance (Claude, Anthropic)
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
 use eframe::egui::{
-    self, Align, Frame, Key, Layout, Margin, Modifiers, RichText, ScrollArea, TextEdit, Ui,
+    self, Align, Frame, Key, Layout, Margin, Modifiers, Rect, RichText, ScrollArea, TextEdit, Ui,
+    UiBuilder, pos2,
 };
 use zirbe_store::{
-    Account, Conversation, Draft, FolderInfo, INBOX, MailSource, Message, Reply, Role, Scope,
-    Status, Store,
+    Account, Change, Conversation, Draft, FolderInfo, INBOX, MailSource, Message, Reply, Role,
+    Scope, Status, Store,
 };
 
 use crate::bubbles::{self, Action, Choice};
@@ -126,6 +127,11 @@ pub struct App {
     scope: Scope,
     settings: Settings,
     settings_open: bool,
+    picked: BTreeSet<String>,
+    anchor: Option<String>,
+    shown: Vec<String>,
+    unread_only: bool,
+    confirm_delete: Option<Vec<Conversation>>,
     auto_opened: Option<String>,
     adding_account: bool,
     sign_in: SignIn,
@@ -150,6 +156,11 @@ impl App {
             scope: Scope::AllInboxes,
             settings: Settings::load(),
             settings_open: false,
+            picked: BTreeSet::new(),
+            anchor: None,
+            shown: Vec::new(),
+            unread_only: false,
+            confirm_delete: None,
             auto_opened: None,
             adding_account: false,
             sign_in: SignIn::default(),
@@ -314,17 +325,26 @@ impl App {
                 let shown: Vec<&Conversation> = conversations
                     .iter()
                     .filter(|conversation| self.scope.holds(conversation))
+                    .filter(|conversation| {
+                        !self.unread_only
+                            || conversation.unread > 0
+                            || self.selected.as_ref() == Some(&conversation.key)
+                            || self.picked.contains(&conversation.key)
+                    })
                     .collect();
+                self.shown = shown.iter().map(|c| c.key.clone()).collect();
                 if shown.is_empty() {
                     ui.add_space(24.0);
                     ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new("No conversations here")
-                                .size(13.0)
-                                .color(palette.secondary),
-                        );
+                        let text = if self.unread_only {
+                            "You're all caught up"
+                        } else {
+                            "No conversations here"
+                        };
+                        ui.label(RichText::new(text).size(13.0).color(palette.secondary));
                     });
                 }
+                let mut pending = None;
                 ScrollArea::vertical().auto_shrink(false).show_rows(
                     ui,
                     list::ROW_HEIGHT,
@@ -332,18 +352,317 @@ impl App {
                     |ui, range| {
                         let today = dates::today();
                         for conversation in &shown[range] {
+                            let key = &conversation.key;
                             let selected = matches!(self.pane, Pane::Conversation)
-                                && self.selected.as_deref() == Some(conversation.key.as_str());
-                            if list::row(ui, conversation, selected, today, self.clock, &palette)
-                                .clicked()
-                            {
-                                self.selected = Some(conversation.key.clone());
-                                self.pane = Pane::Conversation;
+                                && (self.selected.as_ref() == Some(key)
+                                    || self.picked.contains(key));
+                            let response =
+                                list::row(ui, conversation, selected, today, self.clock, &palette);
+                            if response.clicked() {
+                                let modifiers = ui.input(|input| input.modifiers);
+                                self.pick(key, modifiers);
                             }
+                            response.context_menu(|ui| {
+                                let targets: Vec<Conversation> =
+                                    if self.picked.len() > 1 && self.picked.contains(key) {
+                                        shown
+                                            .iter()
+                                            .filter(|c| self.picked.contains(&c.key))
+                                            .map(|c| (*c).clone())
+                                            .collect()
+                                    } else {
+                                        vec![(*conversation).clone()]
+                                    };
+                                if let Some(change) = self.actions_menu(ui, &targets) {
+                                    pending = Some((targets, change));
+                                }
+                            });
                         }
                     },
                 );
+                if let Some((targets, change)) = pending {
+                    self.apply(targets, change);
+                }
             });
+    }
+
+    fn pick(&mut self, key: &str, modifiers: Modifiers) {
+        self.pane = Pane::Conversation;
+        if modifiers.command {
+            if self.picked.is_empty()
+                && let Some(selected) = &self.selected
+            {
+                self.picked.insert(selected.clone());
+            }
+            if !self.picked.remove(key) {
+                self.picked.insert(key.to_string());
+            }
+            self.anchor = Some(key.to_string());
+        } else if modifiers.shift
+            && let Some(anchor) = self.anchor.clone().or_else(|| self.selected.clone())
+            && let (Some(from), Some(to)) = (
+                self.shown.iter().position(|k| *k == anchor),
+                self.shown.iter().position(|k| k == key),
+            )
+        {
+            self.picked = self.shown[from.min(to)..=from.max(to)]
+                .iter()
+                .cloned()
+                .collect();
+        } else {
+            self.picked.clear();
+            self.anchor = Some(key.to_string());
+        }
+        self.selected = Some(key.to_string());
+    }
+
+    fn in_trash(&self) -> bool {
+        let Scope::Mailbox { account, name } = &self.scope else {
+            return false;
+        };
+        self.account(account).is_some_and(|account| {
+            self.folders(&account)
+                .iter()
+                .any(|folder| &folder.name == name && folder.role == Some(Role::Trash))
+        })
+    }
+
+    fn actions_menu(&self, ui: &mut Ui, targets: &[Conversation]) -> Option<Change> {
+        let mut chosen = None;
+        let unread = targets.iter().any(|c| c.unread > 0);
+        let flagged = targets.iter().all(|c| c.flagged);
+        let pinned = targets.iter().all(|c| c.pinned);
+        let accounts: BTreeSet<&str> = targets.iter().map(|c| c.account.as_str()).collect();
+        let account = (accounts.len() == 1)
+            .then(|| accounts.first().and_then(|key| self.account(key)))
+            .flatten();
+        let items = [
+            (
+                if unread {
+                    "Mark as Read"
+                } else {
+                    "Mark as Unread"
+                },
+                Change::Read(unread),
+            ),
+            (
+                if flagged { "Unflag" } else { "Flag" },
+                Change::Flag(!flagged),
+            ),
+            (if pinned { "Unpin" } else { "Pin" }, Change::Pin(!pinned)),
+        ];
+        for (label, change) in items {
+            if ui.button(label).clicked() {
+                chosen = Some(change);
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.button("Archive").clicked() {
+            chosen = Some(Change::Archive);
+            ui.close();
+        }
+        ui.add_enabled_ui(account.is_some(), |ui| {
+            ui.menu_button("Move to", |ui| {
+                for folder in account.iter().flat_map(|account| self.folders(account)) {
+                    let here =
+                        matches!(&self.scope, Scope::Mailbox { name, .. } if *name == folder.name);
+                    let label = format!("{}{}", "    ".repeat(folder.depth), folder.label);
+                    if folder.selectable && !here && ui.button(label).clicked() {
+                        chosen = Some(Change::Move(folder.name.clone()));
+                        ui.close();
+                    }
+                }
+            });
+        });
+        if ui.button("Move to Junk").clicked() {
+            chosen = Some(Change::Junk);
+            ui.close();
+        }
+        let trash = if self.in_trash() {
+            "Delete Forever…"
+        } else {
+            "Trash"
+        };
+        if ui.button(trash).clicked() {
+            chosen = Some(Change::Trash);
+            ui.close();
+        }
+        chosen
+    }
+
+    fn apply(&mut self, targets: Vec<Conversation>, change: Change) {
+        if targets.is_empty() {
+            return;
+        }
+        let change = if change == Change::Trash && self.in_trash() {
+            Change::Delete
+        } else {
+            change
+        };
+        if change == Change::Delete {
+            self.confirm_delete = Some(targets);
+            return;
+        }
+        self.commit(targets, change);
+    }
+
+    fn commit(&mut self, targets: Vec<Conversation>, change: Change) {
+        let leaves = matches!(
+            change,
+            Change::Archive | Change::Trash | Change::Junk | Change::Move(_) | Change::Delete
+        );
+        self.source.mail().change(&targets, &self.scope, change);
+        if leaves {
+            let gone: BTreeSet<&str> = targets.iter().map(|c| c.key.as_str()).collect();
+            let at = self
+                .selected
+                .as_ref()
+                .and_then(|key| self.shown.iter().position(|k| k == key));
+            self.selected = at.and_then(|at| {
+                self.shown[at..]
+                    .iter()
+                    .chain(self.shown[..at].iter().rev())
+                    .find(|key| !gone.contains(key.as_str()))
+                    .cloned()
+            });
+            self.picked.clear();
+            self.reading = None;
+        }
+    }
+
+    fn targets(&self, conversations: &[Conversation]) -> Vec<Conversation> {
+        conversations
+            .iter()
+            .filter(|c| {
+                if self.picked.len() > 1 {
+                    self.picked.contains(&c.key)
+                } else {
+                    self.selected.as_ref() == Some(&c.key)
+                }
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn keys(&mut self, ctx: &egui::Context, conversations: &[Conversation]) {
+        if ctx.egui_wants_keyboard_input()
+            || !matches!(self.pane, Pane::Conversation)
+            || self.confirm_delete.is_some()
+        {
+            return;
+        }
+        let pressed = |modifiers, key| ctx.input_mut(|input| input.consume_key(modifiers, key));
+        let change = if pressed(Modifiers::NONE, Key::Delete) {
+            Some(Change::Trash)
+        } else if pressed(Modifiers::NONE, Key::E) {
+            Some(Change::Archive)
+        } else if pressed(Modifiers::SHIFT, Key::U) {
+            let targets = self.targets(conversations);
+            Some(Change::Read(targets.iter().all(|c| c.unread > 0)))
+        } else {
+            None
+        };
+        if let Some(change) = change {
+            let targets = self.targets(conversations);
+            self.apply(targets, change);
+        }
+    }
+
+    fn confirm_window(&mut self, ctx: &egui::Context) {
+        let Some(targets) = &self.confirm_delete else {
+            return;
+        };
+        let what = match targets.len() {
+            1 => "this conversation".to_string(),
+            count => format!("these {count} conversations"),
+        };
+        let mut answer = None;
+        egui::Window::new("Delete Forever")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "Delete {what} from Trash for good? This cannot be undone."
+                ));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Delete").clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        if ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
+            answer = Some(false);
+        }
+        match answer {
+            Some(true) => {
+                let targets = self.confirm_delete.take().unwrap_or_default();
+                self.commit(targets, Change::Delete);
+            }
+            Some(false) => self.confirm_delete = None,
+            None => {}
+        }
+    }
+
+    fn several(&mut self, ui: &mut Ui, conversations: &[Conversation]) {
+        let palette = self.palette;
+        let targets = self.targets(conversations);
+        let mut chosen = None;
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(palette.canvas))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space((ui.available_height() / 2.0 - 60.0).max(24.0));
+                    ui.label(
+                        RichText::new(format!("{} conversations", targets.len()))
+                            .size(18.0)
+                            .color(palette.text),
+                    );
+                    ui.add_space(12.0);
+                    let unread = targets.iter().any(|c| c.unread > 0);
+                    let trash = if self.in_trash() {
+                        "Delete Forever…"
+                    } else {
+                        "Trash"
+                    };
+                    let read = if unread {
+                        "Mark as Read"
+                    } else {
+                        "Mark as Unread"
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add_space(((ui.available_width() - 380.0) / 2.0).max(0.0));
+                        if ui.button("Archive").clicked() {
+                            chosen = Some(Change::Archive);
+                        }
+                        if ui.button(trash).clicked() {
+                            chosen = Some(Change::Trash);
+                        }
+                        if ui.button(read).clicked() {
+                            chosen = Some(Change::Read(unread));
+                        }
+                        ui.menu_button("More", |ui| {
+                            if let Some(change) = self.actions_menu(ui, &targets) {
+                                chosen = Some(change);
+                            }
+                        });
+                    });
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new("Ctrl-click to add or remove one, Shift-click for a range.")
+                            .size(11.5)
+                            .color(palette.secondary),
+                    );
+                });
+            });
+        if let Some(change) = chosen {
+            self.apply(targets, change);
+        }
     }
 
     fn folders(&self, account: &Account) -> Vec<FolderInfo> {
@@ -483,6 +802,8 @@ impl App {
                 {
                     self.source.mail().refresh();
                 }
+                ui.toggle_value(&mut self.unread_only, "Unread")
+                    .on_hover_text("Show only conversations with unread messages");
             });
         });
     }
@@ -528,12 +849,61 @@ impl App {
                     .inner_margin(Margin::symmetric(16, 10)),
             )
             .show(ui, |ui| {
+                let actions = 190.0;
+                let full = ui.available_rect_before_wrap();
+                let mut chosen = None;
+                ui.scope_builder(
+                    UiBuilder::new()
+                        .max_rect(Rect::from_min_max(
+                            pos2(full.right() - actions, full.top()),
+                            pos2(full.right(), full.top() + 36.0),
+                        ))
+                        .layout(Layout::right_to_left(Align::Center)),
+                    |ui| {
+                        ui.menu_button("…", |ui| {
+                            chosen = self.actions_menu(ui, std::slice::from_ref(&conversation));
+                        })
+                        .response
+                        .on_hover_text("More actions");
+                        let (flag, hint) = if conversation.flagged {
+                            ("⚑", "Unflag")
+                        } else {
+                            ("⚐", "Flag")
+                        };
+                        let flag = RichText::new(flag).color(if conversation.flagged {
+                            palette.flag
+                        } else {
+                            palette.text
+                        });
+                        if ui.button(flag).on_hover_text(hint).clicked() {
+                            chosen = Some(Change::Flag(!conversation.flagged));
+                        }
+                        let hint = if self.in_trash() {
+                            "Delete forever (Delete)"
+                        } else {
+                            "Move to Trash (Delete)"
+                        };
+                        if ui.button("🗑").on_hover_text(hint).clicked() {
+                            chosen = Some(Change::Trash);
+                        }
+                        if ui.button("Archive").on_hover_text("Archive (E)").clicked() {
+                            chosen = Some(Change::Archive);
+                        }
+                    },
+                );
+                if let Some(change) = chosen {
+                    self.apply(vec![conversation.clone()], change);
+                }
                 ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new(list::title(&conversation))
-                            .size(16.0)
-                            .strong()
-                            .color(palette.text),
+                    ui.set_max_width((full.width() - 2.0 * actions).max(120.0));
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(list::title(&conversation))
+                                .size(16.0)
+                                .strong()
+                                .color(palette.text),
+                        )
+                        .truncate(),
                     );
                     let members = conversation
                         .members
@@ -1106,11 +1476,14 @@ impl eframe::App for App {
             return;
         }
         let conversations = self.source.mail().conversations();
+        self.keys(&ctx, &conversations);
         self.sidebar(ui, &conversations);
         match self.pane {
+            Pane::Conversation if self.picked.len() > 1 => self.several(ui, &conversations),
             Pane::Conversation => self.conversation_pane(ui, &conversations),
             Pane::New(_) => self.new_pane(ui),
         }
         self.settings_window(&ctx);
+        self.confirm_window(&ctx);
     }
 }
