@@ -61,6 +61,7 @@ impl SignIn {
             imap_port: self.imap_port.trim().parse().ok()?,
             smtp_host: self.smtp_host.trim().to_string(),
             smtp_port: self.smtp_port.trim().parse().ok()?,
+            ..Account::default()
         })
     }
 

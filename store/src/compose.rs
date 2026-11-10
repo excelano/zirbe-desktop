@@ -263,6 +263,7 @@ mod tests {
             imap_port: 993,
             smtp_host: "smtp.example.org".into(),
             smtp_port: 587,
+            ..Account::default()
         }
     }
 

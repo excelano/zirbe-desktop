@@ -65,3 +65,22 @@ pub fn monogram(seed: &str) -> Color32 {
     });
     COLORS[hash as usize % COLORS.len()]
 }
+
+pub const ACCOUNTS: [Color32; 8] = [
+    Color32::from_rgb(0x0A, 0x84, 0xFF),
+    Color32::from_rgb(0x30, 0xB0, 0x50),
+    Color32::from_rgb(0xFF, 0x95, 0x00),
+    Color32::from_rgb(0xFF, 0x37, 0x5F),
+    Color32::from_rgb(0xAF, 0x52, 0xDE),
+    Color32::from_rgb(0x30, 0xB0, 0xC7),
+    Color32::from_rgb(0xFF, 0x3B, 0x30),
+    Color32::from_rgb(0xFF, 0xCC, 0x00),
+];
+
+pub const ACCOUNT_NAMES: [&str; 8] = [
+    "Blue", "Green", "Orange", "Pink", "Purple", "Teal", "Red", "Yellow",
+];
+
+pub fn account(colour: Option<u8>) -> Color32 {
+    ACCOUNTS[usize::from(colour.unwrap_or(0)) % ACCOUNTS.len()]
+}

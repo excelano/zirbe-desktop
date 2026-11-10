@@ -13,6 +13,8 @@ const ME: &str = "sam@example.com";
 
 pub struct Demo {
     conversations: Mutex<Arc<Vec<Conversation>>>,
+    account: Mutex<Account>,
+    blocked: Mutex<Vec<String>>,
 }
 
 fn person(name: &str, address: &str) -> Person {
@@ -285,6 +287,17 @@ impl Demo {
         }
         Demo {
             conversations: Mutex::new(Arc::new(conversations)),
+            account: Mutex::new(Account {
+                address: ME.into(),
+                name: "Sam Rivera".into(),
+                imap_host: "imap.example.com".into(),
+                imap_port: 993,
+                smtp_host: "smtp.example.com".into(),
+                smtp_port: 587,
+                colour: Some(0),
+                ..Account::default()
+            }),
+            blocked: Mutex::new(Vec::new()),
         }
     }
 }
@@ -295,14 +308,29 @@ impl MailSource for Demo {
     }
 
     fn accounts(&self) -> Vec<Account> {
-        vec![Account {
-            address: ME.into(),
-            name: "Sam Rivera".into(),
-            imap_host: "imap.example.com".into(),
-            imap_port: 993,
-            smtp_host: "smtp.example.com".into(),
-            smtp_port: 587,
-        }]
+        vec![self.account.lock().expect("demo lock").clone()]
+    }
+
+    fn locked(&self, _account: &str) -> bool {
+        false
+    }
+
+    fn blocked(&self, _account: &str) -> Vec<String> {
+        self.blocked.lock().expect("demo lock").clone()
+    }
+
+    fn update_account(&self, account: Account) {
+        let mut known = self.account.lock().expect("demo lock");
+        known.label = account.label;
+        known.colour = account.colour;
+    }
+
+    fn block(&self, _account: &str, address: &str, on: bool) {
+        let mut blocked = self.blocked.lock().expect("demo lock");
+        blocked.retain(|known| known != address);
+        if on {
+            blocked.push(address.to_string());
+        }
     }
 
     fn conversations(&self) -> Arc<Vec<Conversation>> {

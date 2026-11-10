@@ -23,7 +23,7 @@ use crate::files;
 use crate::list;
 use crate::notify::Notifier;
 use crate::page::Page;
-use crate::palette::Palette;
+use crate::palette::{self, Palette};
 use crate::people;
 use crate::settings::Settings;
 use crate::signin::{Outcome, SignIn};
@@ -196,6 +196,9 @@ pub struct App {
     expanded: HashMap<String, String>,
     opening_draft: Option<String>,
     known: Option<(usize, Vec<Person>)>,
+    labels: HashMap<String, String>,
+    reauth: HashMap<String, (String, Option<Reply>, Option<String>)>,
+    confirm_block: Option<(String, Person)>,
     thumbs: HashMap<String, bubbles::Thumb>,
     thumb_loads: Vec<(String, Reply<Vec<u8>>)>,
     reacting: Option<Reacting>,
@@ -241,6 +244,9 @@ impl App {
             expanded: HashMap::new(),
             opening_draft: None,
             known: None,
+            labels: HashMap::new(),
+            reauth: HashMap::new(),
+            confirm_block: None,
             thumbs: HashMap::new(),
             thumb_loads: Vec::new(),
             reacting: None,
@@ -557,9 +563,15 @@ impl App {
                     });
                 }
                 let mut pending = None;
+                let accounts = self.source.mail().accounts();
+                let colours: HashMap<String, egui::Color32> = accounts
+                    .iter()
+                    .map(|account| (account.key(), palette::account(account.colour)))
+                    .collect();
+                let several = accounts.len() > 1;
                 ScrollArea::vertical().auto_shrink(false).show_rows(
                     ui,
-                    list::ROW_HEIGHT,
+                    list::height(self.settings.preview),
                     shown.len(),
                     |ui, range| {
                         let today = dates::today();
@@ -568,8 +580,21 @@ impl App {
                             let selected = matches!(self.pane, Pane::Conversation)
                                 && (self.selected.as_ref() == Some(key)
                                     || self.picked.contains(key));
-                            let response =
-                                list::row(ui, conversation, selected, today, self.clock, &palette);
+                            let look = list::Look {
+                                lines: self.settings.preview,
+                                dot: several
+                                    .then(|| colours.get(&conversation.account).copied())
+                                    .flatten(),
+                            };
+                            let response = list::row(
+                                ui,
+                                conversation,
+                                selected,
+                                today,
+                                self.clock,
+                                &palette,
+                                &look,
+                            );
                             if response.clicked() {
                                 let modifiers = ui.input(|input| input.modifiers);
                                 self.pick(key, modifiers);
@@ -1014,6 +1039,7 @@ impl App {
         if ctx.egui_wants_keyboard_input()
             || !matches!(self.pane, Pane::Conversation)
             || self.confirm_delete.is_some()
+            || self.confirm_block.is_some()
         {
             return;
         }
@@ -1070,6 +1096,44 @@ impl App {
                 self.commit(targets, Change::Delete);
             }
             Some(false) => self.confirm_delete = None,
+            None => {}
+        }
+    }
+
+    fn block_window(&mut self, ctx: &egui::Context) {
+        let Some((account, sender)) = &self.confirm_block else {
+            return;
+        };
+        let mut answer = None;
+        egui::Window::new("Block Sender")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "Block {} <{}>? Their mail moves to Junk now, and so does anything new from them. Settings can unblock them.",
+                    sender.display(),
+                    sender.address
+                ));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Block").clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        if ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
+            answer = Some(false);
+        }
+        match answer {
+            Some(true) => {
+                self.source.mail().block(account, &sender.address, true);
+                self.confirm_block = None;
+            }
+            Some(false) => self.confirm_block = None,
             None => {}
         }
     }
@@ -1198,11 +1262,20 @@ impl App {
             }
             for account in &accounts {
                 ui.separator();
-                ui.label(
-                    RichText::new(&account.address)
-                        .size(11.5)
-                        .color(palette.secondary),
-                );
+                ui.horizontal(|ui| {
+                    let (spot, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(
+                        spot.center(),
+                        4.0,
+                        palette::account(account.colour),
+                    );
+                    ui.label(
+                        RichText::new(account.title())
+                            .size(11.5)
+                            .color(palette.secondary),
+                    );
+                });
                 for folder in self.folders(account) {
                     let scope = Scope::Mailbox {
                         account: account.key(),
@@ -1348,6 +1421,7 @@ impl App {
                 let full = ui.available_rect_before_wrap();
                 let mut chosen = None;
                 let mut find = false;
+                let mut block = None;
                 ui.scope_builder(
                     UiBuilder::new()
                         .max_rect(Rect::from_min_max(
@@ -1359,6 +1433,17 @@ impl App {
                         ui.menu_button("…", |ui| {
                             if ui.button("Find in Conversation (Ctrl+Shift+F)").clicked() {
                                 find = true;
+                                ui.close();
+                            }
+                            if let Some(sender) = conversation
+                                .messages
+                                .iter()
+                                .rev()
+                                .filter_map(|message| message.from.as_ref())
+                                .find(|from| !from.is(&conversation.account))
+                                && ui.button(format!("Block {}…", sender.display())).clicked()
+                            {
+                                block = Some(sender.clone());
                                 ui.close();
                             }
                             ui.separator();
@@ -1397,6 +1482,9 @@ impl App {
                 }
                 if find {
                     self.open_find();
+                }
+                if let Some(sender) = block {
+                    self.confirm_block = Some((conversation.account.clone(), sender));
                 }
                 ui.vertical_centered(|ui| {
                     ui.set_max_width((full.width() - 2.0 * actions).max(120.0));
@@ -2065,6 +2153,17 @@ impl App {
                 ui.checkbox(&mut settings.open_html, "Open HTML email in Email View");
                 ui.checkbox(&mut settings.load_images, "Load remote images");
                 ui.checkbox(&mut settings.notify, "New mail notifications");
+                ui.horizontal(|ui| {
+                    ui.label("Preview");
+                    let names = ["None", "1 line", "2 lines", "3 lines"];
+                    egui::ComboBox::from_id_salt("preview")
+                        .selected_text(names[usize::from(settings.preview.min(3))])
+                        .show_ui(ui, |ui| {
+                            for (lines, name) in names.iter().enumerate() {
+                                ui.selectable_value(&mut settings.preview, lines as u8, *name);
+                            }
+                        });
+                });
                 ui.label(
                     RichText::new("Zirbe shows the plain-text version as a chat bubble by default. Email View shows the message as the sender laid it out. Loading remote images can let a sender know you opened the message and roughly where you are, so it stays off unless you turn it on.")
                         .size(11.0)
@@ -2074,24 +2173,7 @@ impl App {
                 ui.separator();
                 ui.label(RichText::new("Accounts").strong().color(palette.text));
                 for account in self.source.mail().accounts() {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(&account.address).color(palette.text));
-                            ui.label(
-                                RichText::new(format!(
-                                    "{}:{}  ·  {}:{}",
-                                    account.imap_host, account.imap_port, account.smtp_host, account.smtp_port
-                                ))
-                                .size(11.5)
-                                .color(palette.secondary),
-                            );
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if matches!(self.source, Source::Live(_)) && ui.button("Sign Out").clicked() {
-                                sign_out = Some(account.clone());
-                            }
-                        });
-                    });
+                    self.account_section(ui, &account, &mut sign_out);
                     ui.separator();
                 }
                 if let Source::Live(store) = &self.source {
@@ -2122,6 +2204,131 @@ impl App {
             settings.save();
         }
         self.settings_open = open;
+    }
+
+    fn account_section(&mut self, ui: &mut Ui, account: &Account, sign_out: &mut Option<Account>) {
+        let palette = self.palette;
+        let key = account.key();
+        let live = matches!(self.source, Source::Live(_));
+        ui.horizontal(|ui| {
+            let (spot, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(spot.center(), 5.0, palette::account(account.colour));
+            ui.label(RichText::new(&account.address).strong().color(palette.text));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if live && ui.button("Sign Out").clicked() {
+                    *sign_out = Some(account.clone());
+                }
+            });
+        });
+        ui.label(
+            RichText::new(format!(
+                "{}:{}  ·  {}:{}",
+                account.imap_host, account.imap_port, account.smtp_host, account.smtp_port
+            ))
+            .size(11.5)
+            .color(palette.secondary),
+        );
+        let mut changed = account.clone();
+        ui.horizontal(|ui| {
+            ui.label("Label");
+            let label = self
+                .labels
+                .entry(key.clone())
+                .or_insert_with(|| account.label.clone());
+            if ui
+                .add(
+                    TextEdit::singleline(label)
+                        .hint_text(account.address.as_str())
+                        .desired_width(200.0),
+                )
+                .changed()
+            {
+                changed.label = label.clone();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Colour");
+            for (index, colour) in palette::ACCOUNTS.iter().enumerate() {
+                let (spot, response) =
+                    ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
+                ui.painter().circle_filled(spot.center(), 7.0, *colour);
+                if account.colour == Some(index as u8) {
+                    ui.painter().circle_stroke(
+                        spot.center(),
+                        9.5,
+                        egui::Stroke::new(2.0, palette.text),
+                    );
+                }
+                if response
+                    .on_hover_text(palette::ACCOUNT_NAMES[index])
+                    .clicked()
+                {
+                    changed.colour = Some(index as u8);
+                }
+            }
+        });
+        if changed != *account {
+            self.source.mail().update_account(changed);
+        }
+        if self.source.mail().locked(&key) {
+            ui.label(
+                RichText::new("Password needed: the server refused the saved password.")
+                    .size(12.0)
+                    .color(palette.failure),
+            );
+            let entry = self.reauth.entry(key.clone()).or_default();
+            if let Some(reply) = &entry.1
+                && let Some(result) = arrived(reply, ui.ctx())
+            {
+                entry.1 = None;
+                match result {
+                    Ok(()) => entry.0.clear(),
+                    Err(error) => entry.2 = Some(error),
+                }
+            }
+            let mut start = false;
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut entry.0)
+                        .password(true)
+                        .hint_text("Password or app password")
+                        .desired_width(200.0),
+                );
+                start = ui
+                    .add_enabled(
+                        entry.1.is_none() && !entry.0.trim().is_empty(),
+                        egui::Button::new("Sign In Again"),
+                    )
+                    .clicked();
+                if entry.1.is_some() {
+                    ui.spinner();
+                }
+            });
+            if let Some(error) = &entry.2 {
+                ui.label(RichText::new(error).size(12.0).color(palette.failure));
+            }
+            if start && let Source::Live(store) = &self.source {
+                entry.2 = None;
+                entry.1 = Some(store.sign_in_again(&key, entry.0.trim().to_string()));
+            }
+        }
+        let blocked = self.source.mail().blocked(&key);
+        if !blocked.is_empty() {
+            ui.label(
+                RichText::new("Blocked senders")
+                    .size(12.0)
+                    .color(palette.secondary),
+            );
+            for address in blocked {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&address).size(12.0));
+                    if ui.small_button("Unblock").clicked() {
+                        self.source.mail().block(&key, &address, false);
+                    }
+                });
+            }
+        }
     }
 
     fn welcome(&mut self, ui: &mut Ui) {
@@ -2206,5 +2413,6 @@ impl eframe::App for App {
         }
         self.settings_window(&ctx);
         self.confirm_window(&ctx);
+        self.block_window(&ctx);
     }
 }

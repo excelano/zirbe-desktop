@@ -11,6 +11,7 @@ pub struct Settings {
     pub open_html: bool,
     pub load_images: bool,
     pub notify: bool,
+    pub preview: u8,
 }
 
 impl Default for Settings {
@@ -19,6 +20,7 @@ impl Default for Settings {
             open_html: false,
             load_images: false,
             notify: true,
+            preview: 2,
         }
     }
 }

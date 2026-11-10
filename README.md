@@ -48,7 +48,13 @@ to it read as a line such as "Ana accepted". The right-click menu also reacts
 to a message with 👍 👎 ❤ 😂 ‼ or ❓, shown at once and sent after five seconds
 unless undone; a reaction is a short reply with an X-Zirbe-Reaction header, the
 same as the iPhone app sends, so each app shows the other's reactions as
-badges, and Gmail's reactions show the same way. If the copy of a sent message cannot be
+badges, and Gmail's reactions show the same way. In Settings each account
+can have a label and one of eight colours, shown as a dot beside its
+conversations in All Inboxes; an account whose server starts refusing the saved
+password says so there and takes a new one with Sign In Again; and the list can
+show none to three lines of each conversation's latest message. Block, in a
+conversation's menu, moves that sender's mail to Junk now and at every check
+for mail after, until the sender is unblocked in Settings. If the copy of a sent message cannot be
 saved to the server's Sent folder, the status line says so and Zirbe keeps
 trying at every check for mail. Mail you sent
 is read from the account's Sent folder and sits on the right, so a thread reads

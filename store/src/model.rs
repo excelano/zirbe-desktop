@@ -4,7 +4,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
     pub address: String,
     pub name: String,
@@ -12,11 +12,25 @@ pub struct Account {
     pub imap_port: u16,
     pub smtp_host: String,
     pub smtp_port: u16,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub colour: Option<u8>,
 }
+
+pub const COLOURS: u8 = 8;
 
 impl Account {
     pub fn key(&self) -> String {
         self.address.trim().to_lowercase()
+    }
+
+    pub fn title(&self) -> &str {
+        if self.label.trim().is_empty() {
+            self.address.trim()
+        } else {
+            self.label.trim()
+        }
     }
 
     pub fn me(&self) -> Person {

@@ -34,6 +34,7 @@ pub(crate) struct AccountData {
     pub started: BTreeSet<String>,
     pub pinned: BTreeSet<String>,
     pub unsent: Vec<UnsentCopy>,
+    pub blocked: BTreeSet<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

@@ -25,6 +25,7 @@ fn main() {
         imap_port: preset.imap_port,
         smtp_host: arguments.get(2).cloned().unwrap_or(preset.smtp_host),
         smtp_port: preset.smtp_port,
+        ..Account::default()
     };
     let scratch = std::env::temp_dir().join(format!("zirbe-sync-{}", std::process::id()));
     let store = Store::open(scratch.join("config"), scratch.join("cache"), || {});

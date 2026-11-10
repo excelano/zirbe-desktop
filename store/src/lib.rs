@@ -20,7 +20,7 @@ mod smtp;
 mod subject;
 mod thread;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, mpsc as reply};
 use std::time::Duration;
@@ -30,8 +30,8 @@ use tokio::sync::mpsc;
 
 pub use compose::{parse_people, reaction, reply};
 pub use model::{
-    Account, Arrival, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Invite, Message,
-    Original, Outgoing, Person, Role, Scope, Status, When,
+    Account, Arrival, COLOURS, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Invite,
+    Message, Original, Outgoing, Person, Role, Scope, Status, When,
 };
 pub use presets::{Preset, for_address};
 pub use search::Query;
@@ -65,6 +65,10 @@ pub trait MailSource {
     fn arrivals(&self) -> Vec<Arrival>;
     fn search_server(&self, scope: &Scope, text: &str) -> Reply<usize>;
     fn original(&self, account: &str, message: &Message) -> Reply<Original>;
+    fn locked(&self, account: &str) -> bool;
+    fn blocked(&self, account: &str) -> Vec<String>;
+    fn update_account(&self, account: Account);
+    fn block(&self, account: &str, address: &str, on: bool);
     fn save_draft(&self, draft: Draft) -> Reply;
     fn refresh(&self);
     fn email(&self, account: &str, message: &Message) -> Reply<String>;
@@ -88,10 +92,23 @@ struct Snapshot {
     accounts: Vec<Account>,
     conversations: Arc<Vec<Conversation>>,
     folders: HashMap<String, Vec<FolderInfo>>,
+    locked: BTreeSet<String>,
+    blocked: HashMap<String, Vec<String>>,
 }
 
 enum Command {
     Refresh,
+    UpdateAccount(Account),
+    Block {
+        account: String,
+        address: String,
+        on: bool,
+    },
+    SignInAgain {
+        account: String,
+        password: String,
+        reply: reply::Sender<Result<(), String>>,
+    },
     Original {
         account: String,
         mailbox: String,
@@ -166,6 +183,7 @@ impl Store {
             open: Scope::AllInboxes,
             own: commands.clone(),
             watchers: HashMap::new(),
+            locked: BTreeSet::new(),
         };
         std::thread::Builder::new()
             .name("mail sync".into())
@@ -184,6 +202,16 @@ impl Store {
         let (sender, receiver) = reply::channel();
         let _ = self.commands.send(Command::SignIn {
             account,
+            password,
+            reply: sender,
+        });
+        receiver
+    }
+
+    pub fn sign_in_again(&self, account: &str, password: String) -> Reply {
+        let (sender, receiver) = reply::channel();
+        let _ = self.commands.send(Command::SignInAgain {
+            account: account.to_string(),
             password,
             reply: sender,
         });
@@ -263,6 +291,38 @@ impl MailSource for Store {
             reply: sender,
         });
         receiver
+    }
+
+    fn locked(&self, account: &str) -> bool {
+        self.shared
+            .published
+            .read()
+            .expect("published lock")
+            .locked
+            .contains(account)
+    }
+
+    fn blocked(&self, account: &str) -> Vec<String> {
+        self.shared
+            .published
+            .read()
+            .expect("published lock")
+            .blocked
+            .get(account)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn update_account(&self, account: Account) {
+        let _ = self.commands.send(Command::UpdateAccount(account));
+    }
+
+    fn block(&self, account: &str, address: &str, on: bool) {
+        let _ = self.commands.send(Command::Block {
+            account: account.to_string(),
+            address: address.trim().to_lowercase(),
+            on,
+        });
     }
 
     fn original(&self, account: &str, message: &Message) -> Reply<Original> {
@@ -367,6 +427,7 @@ struct Worker {
     open: Scope,
     own: mpsc::UnboundedSender<Command>,
     watchers: HashMap<String, tokio::task::JoinHandle<()>>,
+    locked: BTreeSet<String>,
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
@@ -382,6 +443,9 @@ impl Worker {
         }
         let path = self.accounts_path.clone();
         self.accounts = blocking(move || cache::load_accounts(&path)).await;
+        if self.colour_accounts() {
+            self.save_accounts();
+        }
         for account in self.accounts.clone() {
             let path = self.data_path(&account.key());
             let data = blocking(move || cache::load_data(&path)).await;
@@ -440,6 +504,35 @@ impl Worker {
         }
     }
 
+    fn colour_accounts(&mut self) -> bool {
+        let mut changed = false;
+        for index in 0..self.accounts.len() {
+            if self.accounts[index].colour.is_some() {
+                continue;
+            }
+            let taken: BTreeSet<u8> = self.accounts.iter().filter_map(|a| a.colour).collect();
+            let free = (0..model::COLOURS)
+                .find(|colour| !taken.contains(colour))
+                .unwrap_or(index as u8 % model::COLOURS);
+            self.accounts[index].colour = Some(free);
+            changed = true;
+        }
+        changed
+    }
+
+    async fn sign_in_again(&mut self, account: &str, password: String) -> Result<(), String> {
+        let known = self
+            .account(account)
+            .ok_or("that account is no longer signed in")?;
+        Connection::open(&known, &password).await?.close().await;
+        smtp::check(&known, &password).await?;
+        let key = known.key();
+        blocking(move || secrets::save(&key, &password)).await?;
+        self.locked.remove(account);
+        self.publish();
+        Ok(())
+    }
+
     fn data_path(&self, account: &str) -> PathBuf {
         self.cache_dir.join(cache::file_name(account))
     }
@@ -447,6 +540,53 @@ impl Worker {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::Refresh => self.sync().await,
+            Command::UpdateAccount(changed) => {
+                if let Some(known) = self
+                    .accounts
+                    .iter_mut()
+                    .find(|known| known.key() == changed.key())
+                {
+                    known.label = changed.label.trim().to_string();
+                    known.colour = changed.colour;
+                }
+                self.save_accounts();
+                self.publish();
+            }
+            Command::Block {
+                account,
+                address,
+                on,
+            } => {
+                let mine = self
+                    .account(&account)
+                    .is_some_and(|known| known.key() == address);
+                if let Some(data) = self.data.get_mut(&account)
+                    && !mine
+                {
+                    if on {
+                        data.blocked.insert(address);
+                    } else {
+                        data.blocked.remove(&address);
+                    }
+                }
+                self.save_data(&account);
+                self.publish();
+                if on && let Some(known) = self.account(&account) {
+                    self.sync_accounts(vec![known]).await;
+                }
+            }
+            Command::SignInAgain {
+                account,
+                password,
+                reply,
+            } => {
+                let result = self.sign_in_again(&account, password).await;
+                let succeeded = result.is_ok();
+                let _ = reply.send(result);
+                if succeeded && let Some(known) = self.account(&account) {
+                    self.sync_accounts(vec![known]).await;
+                }
+            }
             Command::Original {
                 account,
                 mailbox,
@@ -591,10 +731,17 @@ impl Worker {
             .iter()
             .map(|(account, data)| (account.clone(), data.folders.clone()))
             .collect();
+        let blocked = self
+            .data
+            .iter()
+            .map(|(account, data)| (account.clone(), data.blocked.iter().cloned().collect()))
+            .collect();
         *self.shared.published.write().expect("published lock") = Snapshot {
             accounts: self.accounts.clone(),
             conversations: Arc::new(conversations),
             folders,
+            locked: self.locked.clone(),
+            blocked,
         };
         (self.shared.notify)();
     }
@@ -631,6 +778,7 @@ impl Worker {
         blocking(move || secrets::save(&key, &password)).await?;
         self.data.insert(account.key(), AccountData::default());
         self.accounts.push(account);
+        self.colour_accounts();
         self.save_accounts();
         self.publish();
         Ok(())
@@ -648,8 +796,16 @@ impl Worker {
         self.set_status(Status::Syncing);
         let mut failures = Vec::new();
         for account in accounts {
-            if let Err(error) = self.sync_account(&account).await {
-                failures.push(format!("{}: {error}", account.address));
+            match self.sync_account(&account).await {
+                Ok(()) => {
+                    self.locked.remove(&account.key());
+                }
+                Err(error) => {
+                    if error.contains("refused the address or password") {
+                        self.locked.insert(account.key());
+                    }
+                    failures.push(format!("{}: {error}", account.address));
+                }
             }
             self.save_data(&account.key());
             self.publish();
@@ -689,6 +845,27 @@ impl Worker {
                 .retain(|name, _| folders.iter().any(|folder| &folder.name == name));
             data.folders = folders;
             let arrived = connection.sync(&host, &mut data.inbox).await?;
+            if !data.blocked.is_empty()
+                && let Some(junk) = actions::role_folder(&data.folders, Role::Junk)
+            {
+                let unwanted: Vec<u32> =
+                    data.inbox
+                        .messages
+                        .iter()
+                        .filter(|(_, message)| {
+                            message.from.as_ref().is_some_and(|from| {
+                                data.blocked.contains(&from.address.to_lowercase())
+                            })
+                        })
+                        .map(|(uid, _)| *uid)
+                        .collect();
+                if !unwanted.is_empty() {
+                    connection.move_to(&host, INBOX, &unwanted, &junk).await?;
+                    for uid in &unwanted {
+                        data.inbox.messages.remove(uid);
+                    }
+                }
+            }
             let me = account.address.trim();
             let mut fresh: Vec<Arrival> = arrived
                 .iter()

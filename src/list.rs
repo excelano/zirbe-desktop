@@ -9,7 +9,14 @@ use crate::dates;
 use crate::palette::{self, Palette};
 use crate::system::Clock;
 
-pub const ROW_HEIGHT: f32 = 72.0;
+pub fn height(lines: u8) -> f32 {
+    54.0 + 18.0 * f32::from(lines)
+}
+
+pub struct Look {
+    pub lines: u8,
+    pub dot: Option<egui::Color32>,
+}
 const AVATAR: f32 = 40.0;
 
 pub fn title(conversation: &Conversation) -> String {
@@ -93,9 +100,12 @@ pub fn row(
     today: NaiveDate,
     clock: Clock,
     palette: &Palette,
+    look: &Look,
 ) -> Response {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), height(look.lines)),
+        Sense::click(),
+    );
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -132,6 +142,11 @@ pub fn row(
         })
         .or(conversation.members.first());
     avatar(ui, avatar_rect, lead);
+    if let Some(colour) = look.dot {
+        let spot = avatar_rect.right_bottom() - vec2(5.0, 5.0);
+        ui.painter().circle_filled(spot, 6.0, palette.sidebar);
+        ui.painter().circle_filled(spot, 4.5, colour);
+    }
     let left = avatar_rect.right() + 12.0;
     let right = rect.right() - 14.0;
     let date = conversation
@@ -186,17 +201,25 @@ pub fn row(
         30.0,
         right - left - marks_width,
     );
-    let account = conversation.account.as_str();
-    line(
-        snippet(conversation, account),
-        12.5,
-        if unread {
+    if look.lines > 0 {
+        let color = if unread {
             palette.text
         } else {
             palette.secondary
-        },
-        48.0,
-        right - left,
-    );
+        };
+        let mut job = egui::text::LayoutJob::single_section(
+            snippet(conversation, conversation.account.as_str()),
+            egui::TextFormat::simple(FontId::proportional(12.5), color),
+        );
+        job.wrap = egui::text::TextWrapping {
+            max_width: right - left,
+            max_rows: usize::from(look.lines),
+            break_anywhere: false,
+            overflow_character: Some('…'),
+        };
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        ui.painter()
+            .galley(pos2(left, rect.top() + 48.0), galley, color);
+    }
     response
 }
