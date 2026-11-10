@@ -84,7 +84,20 @@ struct Shared {
     published: RwLock<Snapshot>,
     status: RwLock<Status>,
     arrivals: Mutex<Vec<Arrival>>,
+    leaving: Mutex<HashSet<(String, String)>>,
     notify: Box<dyn Fn() + Send + Sync>,
+}
+
+impl Shared {
+    fn present(&self, conversations: Vec<Conversation>) -> Arc<Vec<Conversation>> {
+        let leaving = self.leaving.lock().expect("leaving lock");
+        Arc::new(
+            conversations
+                .into_iter()
+                .filter(|c| !leaving.contains(&(c.account.clone(), c.key.clone())))
+                .collect(),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -171,6 +184,7 @@ impl Store {
             published: RwLock::new(Snapshot::default()),
             status: RwLock::new(Status::Syncing),
             arrivals: Mutex::new(Vec::new()),
+            leaving: Mutex::new(HashSet::new()),
             notify: Box::new(notify),
         });
         let (commands, receiver) = mpsc::unbounded_channel();
@@ -379,6 +393,17 @@ impl MailSource for Store {
             if targets.is_empty() && !matches!(change, Change::Pin(_)) {
                 continue;
             }
+            if change.leaves() {
+                self.shared.leaving.lock().expect("leaving lock").extend(
+                    conversations
+                        .iter()
+                        .map(|c| (account.to_string(), c.key.clone())),
+                );
+                let mut published = self.shared.published.write().expect("published lock");
+                published.conversations = self
+                    .shared
+                    .present(published.conversations.as_ref().clone());
+            }
             let _ = self.commands.send(Command::Change {
                 account: account.to_string(),
                 keys,
@@ -387,6 +412,7 @@ impl MailSource for Store {
                 targets,
             });
         }
+        (self.shared.notify)();
     }
 
     fn refresh(&self) {
@@ -738,7 +764,7 @@ impl Worker {
             .collect();
         *self.shared.published.write().expect("published lock") = Snapshot {
             accounts: self.accounts.clone(),
-            conversations: Arc::new(conversations),
+            conversations: self.shared.present(conversations),
             folders,
             locked: self.locked.clone(),
             blocked,
@@ -1055,6 +1081,11 @@ impl Worker {
         change: Change,
         targets: Vec<Target>,
     ) {
+        self.shared
+            .leaving
+            .lock()
+            .expect("leaving lock")
+            .retain(|(owner, key)| owner != account || !keys.contains(key));
         let Some(known) = self.account(account) else {
             return;
         };
@@ -1080,6 +1111,7 @@ impl Worker {
                             "{}: this account has no {what} folder",
                             known.address
                         )));
+                        self.publish();
                         return;
                     }
                 }
@@ -1115,10 +1147,7 @@ impl Worker {
                 folder.unread = (folder.unread as i64 + unread_change).max(0) as u32;
             }
         }
-        if matches!(
-            change,
-            Change::Archive | Change::Trash | Change::Junk | Change::Move(_) | Change::Delete
-        ) {
+        if change.leaves() {
             for id in &ids {
                 data.started.remove(id);
             }

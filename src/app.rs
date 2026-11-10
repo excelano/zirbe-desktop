@@ -1009,10 +1009,7 @@ impl App {
     }
 
     fn commit(&mut self, targets: Vec<Conversation>, change: Change) {
-        let leaves = matches!(
-            change,
-            Change::Archive | Change::Trash | Change::Junk | Change::Move(_) | Change::Delete
-        );
+        let leaves = change.leaves();
         self.source.mail().change(&targets, &self.scope, change);
         if leaves {
             let gone: BTreeSet<&str> = targets.iter().map(|c| c.key.as_str()).collect();

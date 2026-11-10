@@ -108,6 +108,15 @@ pub enum Change {
     Pin(bool),
 }
 
+impl Change {
+    pub fn leaves(&self) -> bool {
+        matches!(
+            self,
+            Change::Archive | Change::Trash | Change::Junk | Change::Move(_) | Change::Delete
+        )
+    }
+}
+
 impl Scope {
     pub fn shows(&self, mailbox: &str) -> bool {
         match self {
