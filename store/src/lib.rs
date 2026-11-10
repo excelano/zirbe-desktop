@@ -13,6 +13,7 @@ mod imap;
 mod mime;
 mod model;
 mod presets;
+mod search;
 mod secrets;
 mod smtp;
 mod subject;
@@ -32,6 +33,7 @@ pub use model::{
     Scope, Status,
 };
 pub use presets::{Preset, for_address};
+pub use search::Query;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -59,6 +61,7 @@ pub trait MailSource {
     fn mark_read(&self, conversation: &Conversation);
     fn change(&self, conversations: &[Conversation], scope: &Scope, change: Change);
     fn arrivals(&self) -> Vec<Arrival>;
+    fn search_server(&self, scope: &Scope, text: &str) -> Reply<usize>;
     fn refresh(&self);
     fn email(&self, account: &str, message: &Message) -> Reply<String>;
     fn attachment(&self, account: &str, message: &Message, index: usize) -> Reply<Vec<u8>>;
@@ -85,6 +88,11 @@ struct Snapshot {
 
 enum Command {
     Refresh,
+    SearchServer {
+        places: Vec<(String, String)>,
+        terms: Vec<String>,
+        reply: reply::Sender<Result<usize, String>>,
+    },
     Arrived(String),
     Open(Scope),
     SignIn {
@@ -222,6 +230,25 @@ impl MailSource for Store {
 
     fn open(&self, scope: &Scope) {
         let _ = self.commands.send(Command::Open(scope.clone()));
+    }
+
+    fn search_server(&self, scope: &Scope, text: &str) -> Reply<usize> {
+        let places = match scope {
+            Scope::AllInboxes => self
+                .accounts()
+                .iter()
+                .map(|account| (account.key(), INBOX.to_string()))
+                .collect(),
+            Scope::Mailbox { account, name } => vec![(account.clone(), name.clone())],
+        };
+        let terms = text.split_whitespace().map(str::to_string).collect();
+        let (sender, receiver) = reply::channel();
+        let _ = self.commands.send(Command::SearchServer {
+            places,
+            terms,
+            reply: sender,
+        });
+        receiver
     }
 
     fn arrivals(&self) -> Vec<Arrival> {
@@ -386,6 +413,14 @@ impl Worker {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::Refresh => self.sync().await,
+            Command::SearchServer {
+                places,
+                terms,
+                reply,
+            } => {
+                let found = self.search_server(places, terms).await;
+                let _ = reply.send(found);
+            }
             Command::Arrived(account) => {
                 if let Some(known) = self.account(&account) {
                     self.sync_accounts(vec![known]).await;
@@ -909,6 +944,44 @@ impl Worker {
                 self.sync_accounts(vec![known]).await;
             }
         }
+    }
+
+    async fn search_server(
+        &mut self,
+        places: Vec<(String, String)>,
+        terms: Vec<String>,
+    ) -> Result<usize, String> {
+        let mut total = 0;
+        for (account, name) in places {
+            let Some(known) = self.account(&account) else {
+                continue;
+            };
+            let password = Self::password(&account).await?;
+            let host = known.imap_host.trim().to_string();
+            let mut connection = Connection::open(&known, &password).await?;
+            let Some(data) = self.data.get_mut(&account) else {
+                connection.close().await;
+                continue;
+            };
+            if data.mailbox_mut(&name).is_none() {
+                data.others.insert(
+                    name.clone(),
+                    Mailbox {
+                        name: name.clone(),
+                        ..Mailbox::default()
+                    },
+                );
+            }
+            let found = match data.mailbox_mut(&name) {
+                Some(mailbox) => connection.search_into(&host, mailbox, &terms).await,
+                None => Ok(0),
+            };
+            connection.close().await;
+            total += found?;
+            self.save_data(&account);
+        }
+        self.publish();
+        Ok(total)
     }
 
     async fn raw(&self, account: &str, mailbox: &str, uid: u32) -> Result<Vec<u8>, String> {

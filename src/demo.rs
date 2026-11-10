@@ -428,6 +428,12 @@ impl MailSource for Demo {
         Vec::new()
     }
 
+    fn search_server(&self, _scope: &Scope, _text: &str) -> Reply<usize> {
+        let (reply, receiver) = mpsc::channel();
+        let _ = reply.send(Ok(0));
+        receiver
+    }
+
     fn attachment(&self, _account: &str, message: &Message, index: usize) -> Reply<Vec<u8>> {
         let name = message.attachments.get(index).cloned().unwrap_or_default();
         let (reply, receiver) = mpsc::channel();

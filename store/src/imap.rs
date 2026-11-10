@@ -25,6 +25,7 @@ use crate::model::{Account, FolderInfo, Role};
 const WINDOW: u32 = 300;
 const WHOLE_UP_TO: u32 = 2 * 1024 * 1024;
 const BATCH: usize = 25;
+const SEARCH_LIMIT: usize = 50;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct Connection {
@@ -166,6 +167,7 @@ impl Connection {
         let validity = selected.uid_validity.unwrap_or(0);
         if validity != mailbox.uid_validity {
             mailbox.messages.clear();
+            mailbox.found.clear();
             mailbox.uid_validity = validity;
         }
         let known = !mailbox.messages.is_empty();
@@ -191,7 +193,21 @@ impl Connection {
                 ))
             })
             .collect();
-        let uids: BTreeSet<u32> = present.iter().map(|(uid, _, _)| *uid).collect();
+        let mut uids: BTreeSet<u32> = present.iter().map(|(uid, _, _)| *uid).collect();
+        if !mailbox.found.is_empty() {
+            let still: BTreeSet<u32> = self
+                .session
+                .uid_search(format!(
+                    "UID {}",
+                    uid_set(&mailbox.found.iter().copied().collect::<Vec<_>>())
+                ))
+                .await
+                .map_err(failed(host))?
+                .into_iter()
+                .collect();
+            mailbox.found.retain(|uid| still.contains(uid));
+            uids.extend(&mailbox.found);
+        }
         mailbox.messages.retain(|uid, _| uids.contains(uid));
         let mut whole = Vec::new();
         let mut large = Vec::new();
@@ -222,6 +238,81 @@ impl Connection {
             return Ok(Vec::new());
         }
         Ok(whole.into_iter().chain(large).collect())
+    }
+
+    pub async fn search_into(
+        &mut self,
+        host: &str,
+        mailbox: &mut Mailbox,
+        terms: &[String],
+    ) -> Result<usize, String> {
+        if terms.is_empty() {
+            return Ok(0);
+        }
+        let selected = self
+            .session
+            .select(&mailbox.name)
+            .await
+            .map_err(failed(host))?;
+        let validity = selected.uid_validity.unwrap_or(0);
+        if validity != mailbox.uid_validity {
+            mailbox.messages.clear();
+            mailbox.found.clear();
+            mailbox.uid_validity = validity;
+        }
+        let criteria: String = terms
+            .iter()
+            .map(|term| format!(" TEXT {}", quoted(term)))
+            .collect();
+        let mut matches: Vec<u32> = self
+            .session
+            .uid_search(format!("CHARSET UTF-8{criteria}"))
+            .await
+            .map_err(failed(host))?
+            .into_iter()
+            .filter(|uid| !mailbox.messages.contains_key(uid))
+            .collect();
+        matches.sort_unstable_by(|a, b| b.cmp(a));
+        matches.truncate(SEARCH_LIMIT);
+        if matches.is_empty() {
+            return Ok(0);
+        }
+        let sizes: Vec<(u32, u32)> = self
+            .session
+            .uid_fetch(uid_set(&matches), "(UID RFC822.SIZE)")
+            .await
+            .map_err(failed(host))?
+            .try_collect::<Vec<Fetch>>()
+            .await
+            .map_err(failed(host))?
+            .iter()
+            .filter_map(|fetch| Some((fetch.uid?, fetch.size.unwrap_or(0))))
+            .collect();
+        let (whole, large): (Vec<_>, Vec<_>) = sizes
+            .into_iter()
+            .partition(|(_, size)| *size <= WHOLE_UP_TO);
+        let whole: Vec<u32> = whole.into_iter().map(|(uid, _)| uid).collect();
+        let large: Vec<u32> = large.into_iter().map(|(uid, _)| uid).collect();
+        for batch in whole.chunks(BATCH) {
+            self.fetch_into(host, mailbox, batch, "(UID FLAGS INTERNALDATE BODY.PEEK[])")
+                .await?;
+        }
+        for batch in large.chunks(BATCH) {
+            self.fetch_into(
+                host,
+                mailbox,
+                batch,
+                "(UID FLAGS INTERNALDATE BODYSTRUCTURE BODY.PEEK[HEADER] BODY.PEEK[1.MIME] BODY.PEEK[1])",
+            )
+            .await?;
+        }
+        let found: Vec<u32> = whole
+            .into_iter()
+            .chain(large)
+            .filter(|uid| mailbox.messages.contains_key(uid))
+            .collect();
+        mailbox.found.extend(&found);
+        Ok(found.len())
     }
 
     pub async fn watch(
@@ -423,6 +514,10 @@ impl Connection {
             .await
             .map_err(failed(host))
     }
+}
+
+fn quoted(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn uid_set(uids: &[u32]) -> String {

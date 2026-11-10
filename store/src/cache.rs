@@ -16,6 +16,8 @@ pub(crate) struct Mailbox {
     pub name: String,
     pub uid_validity: u32,
     pub messages: BTreeMap<u32, Message>,
+    #[serde(default)]
+    pub found: BTreeSet<u32>,
 }
 
 const FORMAT: u32 = 1;

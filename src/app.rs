@@ -2,6 +2,7 @@
 // Built with AI assistance (Claude, Anthropic)
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
@@ -10,8 +11,8 @@ use eframe::egui::{
     UiBuilder, pos2,
 };
 use zirbe_store::{
-    Account, Change, Conversation, Draft, FolderInfo, INBOX, MailSource, Message, Reply, Role,
-    Scope, Status, Store,
+    Account, Change, Conversation, Draft, FolderInfo, INBOX, MailSource, Message, Query, Reply,
+    Role, Scope, Status, Store,
 };
 
 use crate::bubbles::{self, Action, Choice};
@@ -25,6 +26,8 @@ use crate::palette::Palette;
 use crate::settings::Settings;
 use crate::signin::{Outcome, SignIn};
 use crate::system::Clock;
+
+const SEARCH: &str = "conversation search";
 
 pub enum Source {
     Live(Store),
@@ -63,6 +66,20 @@ struct Sending {
 struct Fetching {
     conversation: String,
     work: Work,
+}
+
+struct ServerSearch {
+    query: String,
+    reply: Option<Reply<usize>>,
+    result: Option<Result<usize, String>>,
+}
+
+struct Find {
+    conversation: String,
+    query: String,
+    current: usize,
+    scroll: bool,
+    focus: bool,
 }
 
 struct Reading {
@@ -134,6 +151,10 @@ pub struct App {
     unread_only: bool,
     confirm_delete: Option<Vec<Conversation>>,
     notifier: Option<Notifier>,
+    query: String,
+    matches: Option<(String, usize, BTreeSet<String>)>,
+    server_search: Option<ServerSearch>,
+    find: Option<Find>,
     auto_opened: Option<String>,
     adding_account: bool,
     sign_in: SignIn,
@@ -164,6 +185,10 @@ impl App {
             unread_only: false,
             confirm_delete: None,
             notifier: None,
+            query: String::new(),
+            matches: None,
+            server_search: None,
+            find: None,
             auto_opened: None,
             adding_account: false,
             sign_in: SignIn::default(),
@@ -218,6 +243,17 @@ impl App {
         }
         if ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::R)) {
             self.source.mail().refresh();
+        }
+        if ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::F)) {
+            self.open_find();
+        }
+        if ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::F)) {
+            ctx.memory_mut(|memory| memory.request_focus(egui::Id::unique(SEARCH)));
+        }
+        if self.find.is_some()
+            && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.find = None;
         }
         if matches!(self.pane, Pane::New(_))
             && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
@@ -318,6 +354,8 @@ impl App {
                     });
                 });
                 ui.add_space(6.0);
+                self.search_field(ui);
+                ui.add_space(4.0);
                 egui::Panel::bottom("status")
                     .frame(
                         Frame::new()
@@ -329,6 +367,11 @@ impl App {
                     .iter()
                     .filter(|conversation| self.scope.holds(conversation))
                     .filter(|conversation| {
+                        self.matches
+                            .as_ref()
+                            .is_none_or(|(_, _, keys)| keys.contains(&conversation.key))
+                    })
+                    .filter(|conversation| {
                         !self.unread_only
                             || conversation.unread > 0
                             || self.selected.as_ref() == Some(&conversation.key)
@@ -339,7 +382,9 @@ impl App {
                 if shown.is_empty() {
                     ui.add_space(24.0);
                     ui.vertical_centered(|ui| {
-                        let text = if self.unread_only {
+                        let text = if self.matches.is_some() {
+                            "No matches here"
+                        } else if self.unread_only {
                             "You're all caught up"
                         } else {
                             "No conversations here"
@@ -427,6 +472,215 @@ impl App {
             self.picked.clear();
             self.pane = Pane::Conversation;
         }
+    }
+
+    fn search_field(&mut self, ui: &mut Ui) {
+        let palette = self.palette;
+        ui.horizontal(|ui| {
+            ui.add_space(10.0);
+            let field = ui.add(
+                TextEdit::singleline(&mut self.query)
+                    .id(egui::Id::unique(SEARCH))
+                    .hint_text("Search (Ctrl+F)")
+                    .desired_width(ui.available_width() - 40.0),
+            );
+            if field.lost_focus() && ui.input(|input| input.key_pressed(Key::Escape)) {
+                self.query.clear();
+            }
+            if !self.query.is_empty() && ui.small_button("✕").on_hover_text("Clear").clicked() {
+                self.query.clear();
+            }
+        });
+        if Query::new(&self.query).is_empty() {
+            return;
+        }
+        let place = match &self.scope {
+            Scope::AllInboxes => "Inboxes".to_string(),
+            Scope::Mailbox { .. } => self.scope_label(),
+        };
+        let query = self.query.trim().to_string();
+        let state = match self
+            .server_search
+            .as_ref()
+            .filter(|search| search.query == query)
+        {
+            Some(ServerSearch { reply: Some(_), .. }) => Some(None),
+            Some(ServerSearch {
+                result: Some(result),
+                ..
+            }) => Some(Some(match result {
+                Ok(0) => "Nothing more on the server".to_string(),
+                Ok(count) => format!("Found {count} more on the server"),
+                Err(error) => format!("Server search failed: {error}"),
+            })),
+            _ => None,
+        };
+        let mut start = false;
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            match &state {
+                Some(None) => {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("Searching the server…")
+                            .size(12.0)
+                            .color(palette.secondary),
+                    );
+                }
+                Some(Some(text)) => {
+                    ui.label(RichText::new(text).size(12.0).color(palette.secondary));
+                }
+                None => {
+                    let link = egui::Button::new(
+                        RichText::new(format!("Search {place} on Server"))
+                            .size(12.0)
+                            .color(palette.accent),
+                    )
+                    .frame(false);
+                    start = ui
+                        .add(link)
+                        .on_hover_text("Ask the mail server for older messages that match")
+                        .clicked();
+                }
+            }
+        });
+        if start {
+            self.server_search = Some(ServerSearch {
+                reply: Some(self.source.mail().search_server(&self.scope, &query)),
+                query,
+                result: None,
+            });
+        }
+        if let Some(search) = &mut self.server_search
+            && let Some(reply) = &search.reply
+            && let Some(result) = arrived(reply, ui.ctx())
+        {
+            search.result = Some(result);
+            search.reply = None;
+        }
+    }
+
+    fn update_matches(&mut self, conversations: &Arc<Vec<Conversation>>) {
+        let query = Query::new(&self.query);
+        if query.is_empty() {
+            self.matches = None;
+            return;
+        }
+        let source = Arc::as_ptr(conversations) as usize;
+        if self
+            .matches
+            .as_ref()
+            .is_some_and(|(text, from, _)| *text == self.query && *from == source)
+        {
+            return;
+        }
+        let keys = conversations
+            .iter()
+            .filter(|conversation| query.matches(conversation))
+            .map(|conversation| conversation.key.clone())
+            .collect();
+        self.matches = Some((self.query.clone(), source, keys));
+    }
+
+    fn open_find(&mut self) {
+        if let (Pane::Conversation, Some(key)) = (&self.pane, &self.selected)
+            && self.picked.len() < 2
+        {
+            self.reading = None;
+            self.find = Some(Find {
+                conversation: key.clone(),
+                query: String::new(),
+                current: 0,
+                scroll: false,
+                focus: true,
+            });
+        }
+    }
+
+    fn find_bar(&mut self, ui: &mut Ui, conversation: &Conversation) -> Vec<usize> {
+        let palette = self.palette;
+        let Some(find) = &mut self.find else {
+            return Vec::new();
+        };
+        let query = Query::new(&find.query);
+        let found: Vec<usize> = if query.is_empty() {
+            Vec::new()
+        } else {
+            conversation
+                .messages
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| query.matches_message(message))
+                .map(|(index, _)| index)
+                .collect()
+        };
+        find.scroll = false;
+        let mut close = false;
+        egui::Panel::top("find")
+            .frame(
+                Frame::new()
+                    .fill(palette.canvas)
+                    .inner_margin(Margin::symmetric(16, 6)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let field = ui.add(
+                        TextEdit::singleline(&mut find.query)
+                            .hint_text("Find in conversation")
+                            .desired_width(260.0),
+                    );
+                    if find.focus {
+                        field.request_focus();
+                        find.focus = false;
+                    }
+                    if field.changed() {
+                        find.current = found.len().saturating_sub(1);
+                        find.scroll = true;
+                    }
+                    let count = found.len();
+                    let step = |find: &mut Find, forward: bool| {
+                        if count > 0 {
+                            find.current = if forward {
+                                (find.current + 1) % count
+                            } else {
+                                (find.current + count - 1) % count
+                            };
+                            find.scroll = true;
+                        }
+                    };
+                    if field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) {
+                        step(find, false);
+                        field.request_focus();
+                    }
+                    let place = if count == 0 {
+                        if find.query.trim().is_empty() {
+                            String::new()
+                        } else {
+                            "No matches".into()
+                        }
+                    } else {
+                        format!("{} of {count}", count - find.current.min(count - 1))
+                    };
+                    ui.label(RichText::new(place).size(12.0).color(palette.secondary));
+                    if ui
+                        .small_button("↑")
+                        .on_hover_text("Earlier match")
+                        .clicked()
+                    {
+                        step(find, false);
+                    }
+                    if ui.small_button("↓").on_hover_text("Later match").clicked() {
+                        step(find, true);
+                    }
+                    if ui.small_button("✕").on_hover_text("Close (Esc)").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            self.find = None;
+        }
+        found
     }
 
     fn pick(&mut self, key: &str, modifiers: Modifiers) {
@@ -895,6 +1149,7 @@ impl App {
                 let actions = 190.0;
                 let full = ui.available_rect_before_wrap();
                 let mut chosen = None;
+                let mut find = false;
                 ui.scope_builder(
                     UiBuilder::new()
                         .max_rect(Rect::from_min_max(
@@ -904,6 +1159,11 @@ impl App {
                         .layout(Layout::right_to_left(Align::Center)),
                     |ui| {
                         ui.menu_button("…", |ui| {
+                            if ui.button("Find in Conversation (Ctrl+Shift+F)").clicked() {
+                                find = true;
+                                ui.close();
+                            }
+                            ui.separator();
                             chosen = self.actions_menu(ui, std::slice::from_ref(&conversation));
                         })
                         .response
@@ -937,6 +1197,9 @@ impl App {
                 if let Some(change) = chosen {
                     self.apply(vec![conversation.clone()], change);
                 }
+                if find {
+                    self.open_find();
+                }
                 ui.vertical_centered(|ui| {
                     ui.set_max_width((full.width() - 2.0 * actions).max(120.0));
                     ui.add(
@@ -967,6 +1230,20 @@ impl App {
                     );
                 });
             });
+        if self
+            .find
+            .as_ref()
+            .is_some_and(|find| find.conversation != conversation.key)
+        {
+            self.find = None;
+        }
+        let found = self.find_bar(ui, &conversation);
+        let current = self.find.as_ref().and_then(|find| {
+            found
+                .get(find.current.min(found.len().saturating_sub(1)))
+                .copied()
+        });
+        let scroll = self.find.as_ref().is_some_and(|find| find.scroll);
         egui::Panel::bottom("composer")
             .frame(
                 Frame::new()
@@ -1021,7 +1298,12 @@ impl App {
                             dates::today(),
                             self.clock,
                             &palette,
-                            self.settings.load_images,
+                            &bubbles::View {
+                                images_by_default: self.settings.load_images,
+                                found: &found,
+                                current,
+                                scroll,
+                            },
                         )
                     })
                     .inner;
@@ -1520,6 +1802,7 @@ impl eframe::App for App {
             return;
         }
         let conversations = self.source.mail().conversations();
+        self.update_matches(&conversations);
         self.news(&ctx, &conversations);
         self.keys(&ctx, &conversations);
         self.sidebar(ui, &conversations);

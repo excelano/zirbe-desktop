@@ -26,7 +26,12 @@ ones already read. Archive makes an Archive folder if the account has none, and
 Delete inside Trash removes for good after asking. New mail in an inbox shows
 within seconds, and while Zirbe is open but not in front it posts a
 notification for each new message, which opens the conversation when clicked;
-Settings can turn the notifications off. If the copy of a sent message cannot be
+Settings can turn the notifications off. The search field above the list
+(Ctrl+F) finds conversations by words or the start of words in their subject,
+people and messages, ignoring case and accents, and can then ask the server for
+older matches in the folder being shown, which Zirbe keeps once found; Find in
+Conversation (Ctrl+Shift+F) steps through the messages of one conversation that
+match. If the copy of a sent message cannot be
 saved to the server's Sent folder, the status line says so and Zirbe keeps
 trying at every check for mail. Mail you sent
 is read from the account's Sent folder and sits on the right, so a thread reads

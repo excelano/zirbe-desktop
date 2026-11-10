@@ -31,6 +31,25 @@ pub enum Choice {
     Save(usize),
 }
 
+pub struct View<'a> {
+    pub images_by_default: bool,
+    pub found: &'a [usize],
+    pub current: Option<usize>,
+    pub scroll: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mark {
+    Plain,
+    Found,
+    Current { scroll: bool },
+}
+
+struct Style<'a> {
+    palette: &'a Palette,
+    images_by_default: bool,
+}
+
 pub struct Action {
     pub message: Message,
     pub choice: Choice,
@@ -43,13 +62,26 @@ pub fn show(
     today: NaiveDate,
     clock: Clock,
     palette: &Palette,
-    images_by_default: bool,
+    view: &View<'_>,
 ) -> Option<Action> {
+    let style = Style {
+        palette,
+        images_by_default: view.images_by_default,
+    };
     let mut action = None;
     let group = conversation.members.len() > 1;
     let widest = (ui.available_width() * 0.72).min(560.0);
     let mut previous: Option<&Message> = None;
-    for message in &conversation.messages {
+    for (index, message) in conversation.messages.iter().enumerate() {
+        let mark = if view.current == Some(index) {
+            Mark::Current {
+                scroll: view.scroll,
+            }
+        } else if view.found.contains(&index) {
+            Mark::Found
+        } else {
+            Mark::Plain
+        };
         let mine = message.from.as_ref().is_none_or(|from| from.is(me));
         let new_day = previous.is_none_or(|previous| {
             previous.date.with_timezone(&Local).date_naive()
@@ -98,9 +130,9 @@ pub fn show(
             message,
             mine,
             widest,
-            palette,
+            &style,
             (!mine).then_some(!same_sender || !group),
-            images_by_default,
+            mark,
         ) {
             action = Some(Action {
                 message: message.clone(),
@@ -189,10 +221,12 @@ fn bubble(
     message: &Message,
     mine: bool,
     widest: f32,
-    palette: &Palette,
+    style: &Style<'_>,
     avatar: Option<bool>,
-    images_by_default: bool,
+    mark: Mark,
 ) -> Option<Choice> {
+    let palette = style.palette;
+    let images_by_default = style.images_by_default;
     let (fill, color) = if mine {
         (palette.accent, palette.on_accent)
     } else {
@@ -245,6 +279,24 @@ fn bubble(
     let shape = Rect::from_min_size(pos2(left, row.top()), size);
     ui.painter()
         .rect_filled(shape, CornerRadius::same(16), fill);
+    let outline = match mark {
+        Mark::Plain => None,
+        Mark::Found => Some(egui::Stroke::new(1.5, palette.flag.gamma_multiply(0.6))),
+        Mark::Current { scroll } => {
+            if scroll {
+                ui.scroll_to_rect(shape, Some(Align::Center));
+            }
+            Some(egui::Stroke::new(2.5, palette.flag))
+        }
+    };
+    if let Some(stroke) = outline {
+        ui.painter().rect_stroke(
+            shape.expand(2.0),
+            CornerRadius::same(18),
+            stroke,
+            egui::StrokeKind::Outside,
+        );
+    }
     if avatar == Some(true) {
         let spot = Rect::from_min_size(
             pos2(row.left() + EDGE, row.bottom() - AVATAR),

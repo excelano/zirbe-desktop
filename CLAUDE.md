@@ -15,6 +15,7 @@ The store crate, `store/` (`zirbe-store`), is the mail engine behind
 (a message's HTML for Email View, its embedded images inlined), `folders.rs`
 (the folder list: special-use roles, modified UTF-7 names, the order shown),
 `actions.rs` (which copies of a conversation's messages a change touches),
+`search.rs` (word-start matching that ignores case and accents),
 `thread.rs` (grouping by the threading headers, keeping every copy of a message
 filed in several folders), `compose.rs` (reply recipients and the
 outgoing message), `secrets.rs` (keyring-core) and `cache.rs`. Its worker thread
