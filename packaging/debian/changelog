@@ -1,3 +1,9 @@
+zirbe (0.3.0) unstable; urgency=medium
+
+  * New mail at once with IDLE, notifications, and retried Sent copies
+
+ -- David M. Anderson <david.anderson@excelano.com>  Mon, 09 Nov 2026 18:32:45 -0600
+
 zirbe (0.2.0) unstable; urgency=medium
 
   * Archive, trash, move, flag, pin and mark conversations, one or several
