@@ -72,6 +72,7 @@ struct Reacting {
     at: std::time::Instant,
 }
 
+const COLUMN: f32 = 720.0;
 const UNDO: Duration = Duration::from_secs(5);
 
 struct Sending {
@@ -154,6 +155,16 @@ impl Work {
             }
         }
     }
+}
+
+fn column<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let full = ui.available_rect_before_wrap();
+    let width = full.width().min(COLUMN);
+    let mut rect = full;
+    rect.min.x = full.center().x - width / 2.0;
+    rect.max.x = rect.min.x + width;
+    ui.scope_builder(UiBuilder::new().max_rect(rect).layout(*ui.layout()), add)
+        .inner
 }
 
 pub(crate) fn arrived<T>(reply: &Reply<T>, ctx: &egui::Context) -> Option<Result<T, String>> {
@@ -1536,7 +1547,9 @@ impl App {
                     .fill(palette.canvas)
                     .inner_margin(Margin::symmetric(16, 10)),
             )
-            .show(ui, |ui| self.composer(ui, &conversation, account.as_ref()));
+            .show(ui, |ui| {
+                column(ui, |ui| self.composer(ui, &conversation, account.as_ref()))
+            });
         if self
             .reading
             .as_ref()
@@ -1578,35 +1591,39 @@ impl App {
                     .auto_shrink(false)
                     .show(ui, |ui| {
                         ui.add_space(8.0);
-                        bubbles::show(
-                            ui,
-                            &conversation,
-                            me,
-                            dates::today(),
-                            self.clock,
-                            &palette,
-                            &bubbles::View {
-                                images_by_default: self.settings.load_images,
-                                expanded: &self.expanded,
-                                thumbs: &self.thumbs,
-                                wanted: &wanted,
-                                pending: self
-                                    .reacting
-                                    .as_ref()
-                                    .filter(|reacting| reacting.conversation == conversation.key)
-                                    .and_then(|reacting| {
-                                        reacting
-                                            .target
-                                            .message_id
-                                            .as_deref()
-                                            .map(|id| (id, reacting.emoji))
-                                    }),
-                                clock: self.clock,
-                                found: &found,
-                                current,
-                                scroll,
-                            },
-                        )
+                        column(ui, |ui| {
+                            bubbles::show(
+                                ui,
+                                &conversation,
+                                me,
+                                dates::today(),
+                                self.clock,
+                                &palette,
+                                &bubbles::View {
+                                    images_by_default: self.settings.load_images,
+                                    expanded: &self.expanded,
+                                    thumbs: &self.thumbs,
+                                    wanted: &wanted,
+                                    pending: self
+                                        .reacting
+                                        .as_ref()
+                                        .filter(|reacting| {
+                                            reacting.conversation == conversation.key
+                                        })
+                                        .and_then(|reacting| {
+                                            reacting
+                                                .target
+                                                .message_id
+                                                .as_deref()
+                                                .map(|id| (id, reacting.emoji))
+                                        }),
+                                    clock: self.clock,
+                                    found: &found,
+                                    current,
+                                    scroll,
+                                },
+                            )
+                        })
                     })
                     .inner;
                 for (message, index) in wanted.into_inner() {
