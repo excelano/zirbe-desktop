@@ -109,12 +109,12 @@ Account settings, without the password, are kept in `~/.config/zirbe`, and the
 newest messages of each inbox, Sent folder and folder you have opened in
 `~/.cache/zirbe`, readable only
 by you. Messages are shown as text. A message with an HTML version carries
-Email View and Show Images at the top of its bubble. Email View downloads that
+Web View and Show Images at the top of its bubble. Web View downloads that
 message again from your server and shows its full HTML in the reading pane,
 drawn by Zirbe itself with nothing loaded from the network; pictures the sender
 embedded in the message still show. Show Images loads the sender's linked
 pictures too, which can tell the sender you opened the message and roughly
-where you are. Settings can open HTML email in Email View and load its pictures
+where you are. Settings can open HTML email in Web View and load its pictures
 without being asked; both are off until you turn them on. Links open in your browser. An attachment
 is downloaded from your server when you open or save it; one you open is
 written to a private folder under `$XDG_RUNTIME_DIR/zirbe`, which Zirbe empties

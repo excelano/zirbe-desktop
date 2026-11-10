@@ -12,7 +12,7 @@ are the user's own mail servers.
 The store crate, `store/` (`zirbe-store`), is the mail engine behind
 `MailSource`: `imap.rs` (async-imap over tokio-rustls), `smtp.rs` (lettre),
 `mime.rs` and `content.rs` (mail-parser, html2text, quote folding), `email.rs`
-(a message's HTML for Email View, its embedded images inlined), `folders.rs`
+(a message's HTML for Web View, its embedded images inlined), `folders.rs`
 (the folder list: special-use roles, modified UTF-7 names, the order shown),
 `actions.rs` (which copies of a conversation's messages a change touches),
 `search.rs` (word-start matching that ignores case and accents), `invite.rs`
@@ -68,7 +68,7 @@ run against a live account without touching the real profile.
 
 ## Rules
 
-Messages are shown as text. HTML is rendered only in Email View, which the user
+Messages are shown as text. HTML is rendered only in Web View, which the user
 opens per message, and Blitz runs no script. The page's `NetProvider` in
 `src/page.rs` answers images embedded in the message and nothing else, unless
 the user chose Show Images; then it fetches the message's `<img>` sources and

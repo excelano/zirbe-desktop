@@ -1876,7 +1876,7 @@ impl App {
                                 ));
                             }
                         }
-                        Choice::Email { images } => self.open_reading(&conversation, message, images),
+                        Choice::Web { images } => self.open_reading(&conversation, message, images),
                         Choice::ReplyTo => {
                             self.replying
                                 .entry(conversation.key.clone())
@@ -2051,7 +2051,7 @@ impl App {
         let mail = self.source.mail();
         let name = |index: usize| message.attachments.get(index).cloned().unwrap_or_default();
         let work = match choice {
-            Choice::Email { .. }
+            Choice::Web { .. }
             | Choice::React(_)
             | Choice::Join(_)
             | Choice::AddToCalendar
@@ -2377,7 +2377,7 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.label(RichText::new("Reading").strong().color(palette.text));
-                ui.checkbox(&mut settings.open_html, "Open HTML email in Email View");
+                ui.checkbox(&mut settings.open_html, "Open HTML email in Web View");
                 ui.checkbox(&mut settings.load_images, "Load remote images");
                 ui.checkbox(&mut settings.notify, "New mail notifications");
                 ui.horizontal(|ui| {
@@ -2392,7 +2392,7 @@ impl App {
                         });
                 });
                 ui.label(
-                    RichText::new("Zirbe shows the plain-text version as a chat bubble by default. Email View shows the message as the sender laid it out. Loading remote images can let a sender know you opened the message and roughly where you are, so it stays off unless you turn it on.")
+                    RichText::new("Zirbe shows the plain-text version as a chat bubble by default. Web View shows the message as the sender laid it out. Loading remote images can let a sender know you opened the message and roughly where you are, so it stays off unless you turn it on.")
                         .size(11.0)
                         .color(palette.secondary),
                 );

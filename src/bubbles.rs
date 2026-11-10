@@ -25,11 +25,11 @@ const CHIP: f32 = 26.0;
 const CHIP_GAP: f32 = 4.0;
 const CONTROLS: f32 = 20.0;
 const CONTROL_GAP: f32 = 12.0;
-pub const EMAIL_VIEW: &str = "🌐 Email View";
+pub const WEB_VIEW: &str = "🌐 Web View";
 pub const SHOW_IMAGES: &str = "👁 Show Images";
 
 pub enum Choice {
-    Email { images: bool },
+    Web { images: bool },
     Open(usize),
     Save(usize),
     ReplyTo,
@@ -601,9 +601,9 @@ fn bubble(
     let controls_width = if !message.html {
         0.0
     } else if separate_images {
-        label_width(ui, EMAIL_VIEW, tone) + label_width(ui, SHOW_IMAGES, tone) + 3.0 * CONTROL_GAP
+        label_width(ui, WEB_VIEW, tone) + label_width(ui, SHOW_IMAGES, tone) + 3.0 * CONTROL_GAP
     } else {
-        label_width(ui, EMAIL_VIEW, tone)
+        label_width(ui, WEB_VIEW, tone)
     };
     let controls_height = if message.html {
         CONTROLS + CHIP_GAP
@@ -665,9 +665,9 @@ fn bubble(
     if message.html {
         let control =
             |text: &str| egui::Button::new(RichText::new(text).size(13.0).color(tone)).frame(false);
-        let email_width = label_width(ui, EMAIL_VIEW, tone);
+        let web_width = label_width(ui, WEB_VIEW, tone);
         let images_width = label_width(ui, SHOW_IMAGES, tone);
-        let email = Rect::from_min_size(pos2(inside.left(), top), vec2(email_width, CONTROLS));
+        let web = Rect::from_min_size(pos2(inside.left(), top), vec2(web_width, CONTROLS));
         let images = Rect::from_min_size(
             pos2(inside.right() - images_width, top),
             vec2(images_width, CONTROLS),
@@ -677,17 +677,13 @@ fn bubble(
         } else {
             "Show this message as the sender laid it out, with its pictures"
         };
-        if ui
-            .put(email, control(EMAIL_VIEW))
-            .on_hover_text(hint)
-            .clicked()
-        {
-            chosen = Some(Choice::Email {
+        if ui.put(web, control(WEB_VIEW)).on_hover_text(hint).clicked() {
+            chosen = Some(Choice::Web {
                 images: images_by_default,
             });
         }
         if separate_images {
-            let middle = (email.right() + images.left()) / 2.0;
+            let middle = (web.right() + images.left()) / 2.0;
             ui.painter().vline(
                 middle,
                 (top + 3.0)..=(top + CONTROLS - 3.0),
@@ -698,7 +694,7 @@ fn bubble(
                 .on_hover_text("Show this message as laid out, loading its pictures from the sender's servers, which can tell the sender you opened it")
                 .clicked()
             {
-                chosen = Some(Choice::Email { images: true });
+                chosen = Some(Choice::Web { images: true });
             }
         }
         top += CONTROLS + CHIP_GAP;

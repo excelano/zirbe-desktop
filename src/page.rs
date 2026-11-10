@@ -62,9 +62,9 @@ impl Page {
         let (outbox, replies) = mpsc::channel();
         let wake = commands.clone();
         std::thread::Builder::new()
-            .name("email view".into())
+            .name("web view".into())
             .spawn(move || Renderer::new(html, images, wake, outbox).run(inbox))
-            .expect("a thread for the email view");
+            .expect("a thread for the web view");
         Page {
             commands,
             replies,
