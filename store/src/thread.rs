@@ -174,6 +174,7 @@ pub(crate) mod tests {
             seen: false,
             partial: false,
             html: false,
+            list: false,
             flagged: false,
             reaction: None,
             invite: None,

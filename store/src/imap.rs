@@ -384,6 +384,7 @@ impl Connection {
                                 .bodystructure()
                                 .map(mime::attachment_names)
                                 .unwrap_or_default(),
+                            html: fetch.bodystructure().is_some_and(mime::has_html),
                         },
                         arrived,
                     })
@@ -426,14 +427,18 @@ impl Connection {
         }
         self.session.select(mailbox).await.map_err(failed(host))?;
         let sign = if on { '+' } else { '-' };
-        self.store(host, uids, &format!("{sign}FLAGS.SILENT ({flag})"))
-            .await
+        self.store(
+            host,
+            &uid_set(uids),
+            &format!("{sign}FLAGS.SILENT ({flag})"),
+        )
+        .await
     }
 
-    async fn store(&mut self, host: &str, uids: &[u32], query: &str) -> Result<(), String> {
+    async fn store(&mut self, host: &str, set: &str, query: &str) -> Result<(), String> {
         let _: Vec<Fetch> = self
             .session
-            .uid_store(uid_set(uids), query)
+            .uid_store(set, query)
             .await
             .map_err(failed(host))?
             .try_collect()
@@ -442,12 +447,12 @@ impl Connection {
         Ok(())
     }
 
-    async fn expunge(&mut self, host: &str, uids: &[u32]) -> Result<(), String> {
+    async fn expunge(&mut self, host: &str, set: &str) -> Result<(), String> {
         let capabilities = self.session.capabilities().await.map_err(failed(host))?;
         if capabilities.has_str("UIDPLUS") {
             let _: Vec<_> = self
                 .session
-                .uid_expunge(uid_set(uids))
+                .uid_expunge(set)
                 .await
                 .map_err(failed(host))?
                 .try_collect()
@@ -489,8 +494,9 @@ impl Connection {
             .uid_copy(uid_set(uids), destination)
             .await
             .map_err(failed(host))?;
-        self.store(host, uids, "+FLAGS.SILENT (\\Deleted)").await?;
-        self.expunge(host, uids).await
+        self.store(host, &uid_set(uids), "+FLAGS.SILENT (\\Deleted)")
+            .await?;
+        self.expunge(host, &uid_set(uids)).await
     }
 
     pub async fn delete(&mut self, host: &str, mailbox: &str, uids: &[u32]) -> Result<(), String> {
@@ -498,8 +504,16 @@ impl Connection {
             return Ok(());
         }
         self.session.select(mailbox).await.map_err(failed(host))?;
-        self.store(host, uids, "+FLAGS.SILENT (\\Deleted)").await?;
-        self.expunge(host, uids).await
+        self.store(host, &uid_set(uids), "+FLAGS.SILENT (\\Deleted)")
+            .await?;
+        self.expunge(host, &uid_set(uids)).await
+    }
+
+    pub async fn empty(&mut self, host: &str, mailbox: &str, highest: u32) -> Result<(), String> {
+        self.session.select(mailbox).await.map_err(failed(host))?;
+        let set = format!("1:{highest}");
+        self.store(host, &set, "+FLAGS.SILENT (\\Deleted)").await?;
+        self.expunge(host, &set).await
     }
 
     pub async fn create(&mut self, host: &str, mailbox: &str) -> Result<(), String> {

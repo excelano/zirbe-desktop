@@ -163,6 +163,8 @@ pub struct Message {
     #[serde(default)]
     pub html: bool,
     #[serde(default)]
+    pub list: bool,
+    #[serde(default)]
     pub flagged: bool,
     #[serde(default)]
     pub reaction: Option<String>,

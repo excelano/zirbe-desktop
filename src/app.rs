@@ -6,9 +6,10 @@ use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
+use eframe::egui::containers::menu::{MenuButton, MenuConfig};
 use eframe::egui::{
-    self, Align, Frame, Key, Layout, Margin, Modifiers, Rect, RichText, ScrollArea, TextEdit, Ui,
-    UiBuilder, pos2,
+    self, Align, Frame, Key, Layout, Margin, Modifiers, PopupCloseBehavior, Rect, RichText,
+    ScrollArea, TextEdit, Ui, UiBuilder, pos2,
 };
 use zirbe_store::{
     Account, Change, Conversation, Draft, FolderInfo, INBOX, MailSource, Message, Outgoing, Person,
@@ -20,6 +21,7 @@ use crate::composer::{self, Composer};
 use crate::dates;
 use crate::demo::Demo;
 use crate::files;
+use crate::filter::Filter;
 use crate::list;
 use crate::notify::Notifier;
 use crate::page::Page;
@@ -100,6 +102,17 @@ struct Find {
     focus: bool,
 }
 
+struct Emptying {
+    account: String,
+    name: String,
+    label: String,
+}
+
+enum ListAction {
+    SelectAll,
+    MarkAllRead,
+}
+
 struct Reading {
     conversation: String,
     account: String,
@@ -167,6 +180,40 @@ fn column<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
+fn only_from(conversation: &Conversation, sender: &Person) -> bool {
+    let mut others = conversation
+        .messages
+        .iter()
+        .filter_map(|message| message.from.as_ref())
+        .filter(|from| !from.is(&conversation.account))
+        .peekable();
+    others.peek().is_some() && others.all(|from| from.is(&sender.address))
+}
+
+fn ask(ctx: &egui::Context, title: &str, text: &str, yes: &str) -> Option<bool> {
+    let mut answer = None;
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.label(text);
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(yes).clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+    if ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
+        answer = Some(false);
+    }
+    answer
+}
+
 pub(crate) fn arrived<T>(reply: &Reply<T>, ctx: &egui::Context) -> Option<Result<T, String>> {
     match reply.try_recv() {
         Ok(result) => Some(result),
@@ -195,8 +242,11 @@ pub struct App {
     picked: BTreeSet<String>,
     anchor: Option<String>,
     shown: Vec<String>,
-    unread_only: bool,
+    filter: Filter,
+    reveal: bool,
     confirm_delete: Option<Vec<Conversation>>,
+    confirm_empty: Option<Emptying>,
+    confirm_sweep: Option<(Person, Vec<Conversation>)>,
     notifier: Option<Notifier>,
     query: String,
     matches: Option<(String, usize, BTreeSet<String>)>,
@@ -243,8 +293,11 @@ impl App {
             picked: BTreeSet::new(),
             anchor: None,
             shown: Vec::new(),
-            unread_only: false,
+            filter: Filter::default(),
+            reveal: false,
             confirm_delete: None,
+            confirm_empty: None,
+            confirm_sweep: None,
             notifier: None,
             query: String::new(),
             matches: None,
@@ -505,6 +558,7 @@ impl App {
                     .inner_margin(Margin::symmetric(0, 6)),
             )
             .show(ui, |ui| {
+                let mut action = None;
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
                     if let Some(scope) = self.switcher(ui)
@@ -532,11 +586,39 @@ impl App {
                         {
                             self.start_new();
                         }
+                        ui.menu_button("⋯", |ui| {
+                            let select_all =
+                                egui::Button::new("Select All").shortcut_text("Ctrl+A");
+                            if ui.add(select_all).clicked() {
+                                action = Some(ListAction::SelectAll);
+                                ui.close();
+                            }
+                            if ui.button("Mark All as Read").clicked() {
+                                action = Some(ListAction::MarkAllRead);
+                                ui.close();
+                            }
+                        })
+                        .response
+                        .on_hover_text("List actions");
                     });
                 });
                 ui.add_space(6.0);
                 self.search_field(ui);
                 ui.add_space(4.0);
+                if let Some(emptying) = self.emptiable()
+                    && conversations.iter().any(|c| self.scope.holds(c))
+                {
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        if ui
+                            .small_button(format!("Empty {}…", emptying.label))
+                            .clicked()
+                        {
+                            self.confirm_empty = Some(emptying);
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
                 egui::Panel::bottom("status")
                     .frame(
                         Frame::new()
@@ -553,20 +635,33 @@ impl App {
                             .is_none_or(|(_, _, keys)| keys.contains(&conversation.key))
                     })
                     .filter(|conversation| {
-                        !self.unread_only
-                            || conversation.unread > 0
+                        self.filter.admits(conversation)
                             || self.selected.as_ref() == Some(&conversation.key)
                             || self.picked.contains(&conversation.key)
                     })
                     .collect();
                 self.shown = shown.iter().map(|c| c.key.clone()).collect();
+                match action {
+                    Some(ListAction::SelectAll) => self.select_all(),
+                    Some(ListAction::MarkAllRead) => {
+                        let unread = shown
+                            .iter()
+                            .filter(|c| c.unread > 0)
+                            .map(|c| (*c).clone())
+                            .collect();
+                        self.apply(unread, Change::Read(true));
+                    }
+                    None => {}
+                }
                 if shown.is_empty() {
                     ui.add_space(24.0);
                     ui.vertical_centered(|ui| {
                         let text = if self.matches.is_some() {
                             "No matches here"
-                        } else if self.unread_only {
+                        } else if self.filter.only_unread() {
                             "You're all caught up"
+                        } else if self.filter.active() {
+                            "Nothing here matches the filter"
                         } else {
                             "No conversations here"
                         };
@@ -585,6 +680,21 @@ impl App {
                     list::height(self.settings.preview),
                     shown.len(),
                     |ui, range| {
+                        if std::mem::take(&mut self.reveal)
+                            && let Some(at) = self
+                                .selected
+                                .as_ref()
+                                .and_then(|key| shown.iter().position(|c| &c.key == key))
+                        {
+                            let row =
+                                list::height(self.settings.preview) + ui.spacing().item_spacing.y;
+                            let top = ui.cursor().top() + (at as f32 - range.start as f32) * row;
+                            let rect = Rect::from_min_size(
+                                pos2(ui.cursor().left(), top),
+                                egui::vec2(1.0, row),
+                            );
+                            ui.scroll_to_rect(rect, None);
+                        }
                         let today = dates::today();
                         for conversation in &shown[range] {
                             let key = &conversation.key;
@@ -913,6 +1023,57 @@ impl App {
         self.selected = Some(key.to_string());
     }
 
+    fn select_all(&mut self) {
+        match self.shown.as_slice() {
+            [] => {}
+            [only] => self.pick(&only.clone(), Modifiers::NONE),
+            all => {
+                self.picked = all.iter().cloned().collect();
+                if self
+                    .selected
+                    .as_ref()
+                    .is_none_or(|key| !self.picked.contains(key))
+                {
+                    self.selected = all.first().cloned();
+                }
+                self.pane = Pane::Conversation;
+            }
+        }
+    }
+
+    fn step(&mut self, by: isize, modifiers: Modifiers) {
+        let at = self
+            .selected
+            .as_ref()
+            .and_then(|key| self.shown.iter().position(|k| k == key));
+        let next = match at {
+            Some(at) => at
+                .checked_add_signed(by)
+                .filter(|next| *next < self.shown.len()),
+            None => (!self.shown.is_empty()).then_some(0),
+        };
+        if let Some(key) = next.map(|next| self.shown[next].clone()) {
+            self.pick(&key, modifiers);
+            self.reveal = true;
+        }
+    }
+
+    fn emptiable(&self) -> Option<Emptying> {
+        let Scope::Mailbox { account, name } = &self.scope else {
+            return None;
+        };
+        self.folders(&self.account(account)?)
+            .into_iter()
+            .find(|folder| {
+                &folder.name == name && matches!(folder.role, Some(Role::Trash | Role::Junk))
+            })
+            .map(|folder| Emptying {
+                account: account.clone(),
+                name: name.clone(),
+                label: folder.label,
+            })
+    }
+
     fn in_trash(&self) -> bool {
         self.in_role(Role::Trash)
     }
@@ -1048,10 +1209,24 @@ impl App {
             || !matches!(self.pane, Pane::Conversation)
             || self.confirm_delete.is_some()
             || self.confirm_block.is_some()
+            || self.confirm_empty.is_some()
+            || self.confirm_sweep.is_some()
         {
             return;
         }
         let pressed = |modifiers, key| ctx.input_mut(|input| input.consume_key(modifiers, key));
+        if pressed(Modifiers::COMMAND, Key::A) {
+            self.select_all();
+            return;
+        }
+        for (key, by) in [(Key::ArrowDown, 1), (Key::ArrowUp, -1)] {
+            for modifiers in [Modifiers::SHIFT, Modifiers::NONE] {
+                if pressed(modifiers, key) {
+                    self.step(by, modifiers);
+                    return;
+                }
+            }
+        }
         let change = if pressed(Modifiers::NONE, Key::Delete) {
             Some(Change::Trash)
         } else if pressed(Modifiers::NONE, Key::E) {
@@ -1076,29 +1251,8 @@ impl App {
             1 => "this conversation".to_string(),
             count => format!("these {count} conversations"),
         };
-        let mut answer = None;
-        egui::Window::new("Delete Forever")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.label(format!(
-                    "Delete {what} from Trash for good? This cannot be undone."
-                ));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Delete").clicked() {
-                        answer = Some(true);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        answer = Some(false);
-                    }
-                });
-            });
-        if ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
-            answer = Some(false);
-        }
-        match answer {
+        let text = format!("Delete {what} from Trash for good? This cannot be undone.");
+        match ask(ctx, "Delete Forever", &text, "Delete") {
             Some(true) => {
                 let targets = self.confirm_delete.take().unwrap_or_default();
                 self.commit(targets, Change::Delete);
@@ -1108,35 +1262,70 @@ impl App {
         }
     }
 
+    fn empty_window(&mut self, ctx: &egui::Context) {
+        let Some(emptying) = &self.confirm_empty else {
+            return;
+        };
+        let accounts = self.source.mail().accounts();
+        let place = match accounts.iter().find(|a| a.key() == emptying.account) {
+            Some(account) if accounts.len() > 1 => {
+                format!("{} for {}", emptying.label, account.title())
+            }
+            _ => emptying.label.clone(),
+        };
+        let text = format!(
+            "Delete everything in {place} for good? Mail that arrived after Zirbe last checked is kept. This cannot be undone."
+        );
+        let title = format!("Empty {}", emptying.label);
+        match ask(ctx, &title, &text, "Empty") {
+            Some(true) => {
+                if let Some(emptying) = self.confirm_empty.take() {
+                    self.source.mail().empty(&emptying.account, &emptying.name);
+                    self.selected = None;
+                    self.picked.clear();
+                    self.reading = None;
+                }
+            }
+            Some(false) => self.confirm_empty = None,
+            None => {}
+        }
+    }
+
+    fn sweep_window(&mut self, ctx: &egui::Context) {
+        let Some((sender, targets)) = &self.confirm_sweep else {
+            return;
+        };
+        let what = match targets.len() {
+            1 => "the conversation".to_string(),
+            count => format!("all {count} conversations"),
+        };
+        let text = format!(
+            "Move {what} with {} <{}> from {} to Trash?",
+            sender.display(),
+            sender.address,
+            self.scope_label()
+        );
+        match ask(ctx, "Trash All from Sender", &text, "Trash") {
+            Some(true) => {
+                if let Some((_, targets)) = self.confirm_sweep.take() {
+                    self.commit(targets, Change::Trash);
+                }
+            }
+            Some(false) => self.confirm_sweep = None,
+            None => {}
+        }
+    }
+
     fn block_window(&mut self, ctx: &egui::Context) {
         let Some((account, sender)) = &self.confirm_block else {
             return;
         };
-        let mut answer = None;
-        egui::Window::new("Block Sender")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.label(format!(
-                    "Block {} <{}>? Their mail moves to Junk now, and so does anything new from them. Settings can unblock them.",
-                    sender.display(),
-                    sender.address
-                ));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Block").clicked() {
-                        answer = Some(true);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        answer = Some(false);
-                    }
-                });
-            });
-        if ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
-            answer = Some(false);
-        }
-        match answer {
+        let text = format!(
+            "Block {} <{}>? Their mail moves to Junk now, and so does anything new from them. Settings can unblock them.",
+            sender.display(),
+            sender.address
+        );
+        match ask(ctx, "Block Sender", &text, "Block") {
             Some(true) => {
                 self.source.mail().block(account, &sender.address, true);
                 self.confirm_block = None;
@@ -1348,8 +1537,15 @@ impl App {
                 {
                     self.source.mail().refresh();
                 }
-                ui.toggle_value(&mut self.unread_only, "Unread")
-                    .on_hover_text("Show only conversations with unread messages");
+                let filter = self.filter.summary();
+                let button = egui::Button::new("Filter").selected(self.filter.active());
+                MenuButton::from_button(button)
+                    .config(
+                        MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside),
+                    )
+                    .ui(ui, |ui| self.filter.menu(ui, &palette))
+                    .0
+                    .on_hover_text(filter);
             });
         });
     }
@@ -1430,6 +1626,7 @@ impl App {
                 let mut chosen = None;
                 let mut find = false;
                 let mut block = None;
+                let mut sweep = None;
                 ui.scope_builder(
                     UiBuilder::new()
                         .max_rect(Rect::from_min_max(
@@ -1449,10 +1646,19 @@ impl App {
                                 .rev()
                                 .filter_map(|message| message.from.as_ref())
                                 .find(|from| !from.is(&conversation.account))
-                                && ui.button(format!("Block {}…", sender.display())).clicked()
                             {
-                                block = Some(sender.clone());
-                                ui.close();
+                                if ui.button(format!("Block {}…", sender.display())).clicked() {
+                                    block = Some(sender.clone());
+                                    ui.close();
+                                }
+                                if !self.in_trash()
+                                    && ui
+                                        .button(format!("Trash All from {}…", sender.display()))
+                                        .clicked()
+                                {
+                                    sweep = Some(sender.clone());
+                                    ui.close();
+                                }
                             }
                             ui.separator();
                             chosen = self.actions_menu(ui, std::slice::from_ref(&conversation));
@@ -1490,6 +1696,15 @@ impl App {
                 }
                 if find {
                     self.open_find();
+                }
+                if let Some(sender) = sweep {
+                    let targets = conversations
+                        .iter()
+                        .filter(|c| c.account == conversation.account && self.scope.holds(c))
+                        .filter(|c| only_from(c, &sender))
+                        .cloned()
+                        .collect();
+                    self.confirm_sweep = Some((sender, targets));
                 }
                 if let Some(sender) = block {
                     self.confirm_block = Some((conversation.account.clone(), sender));
@@ -1661,9 +1876,7 @@ impl App {
                                 ));
                             }
                         }
-                        Choice::Email { images } => {
-                            self.open_reading(&conversation, message, images)
-                        }
+                        Choice::Email { images } => self.open_reading(&conversation, message, images),
                         Choice::ReplyTo => {
                             self.replying
                                 .entry(conversation.key.clone())
@@ -2428,5 +2641,7 @@ impl eframe::App for App {
         self.settings_window(&ctx);
         self.confirm_window(&ctx);
         self.block_window(&ctx);
+        self.empty_window(&ctx);
+        self.sweep_window(&ctx);
     }
 }

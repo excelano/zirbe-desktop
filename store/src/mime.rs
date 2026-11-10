@@ -3,7 +3,7 @@
 
 use async_imap::imap_proto::{BodyParams, BodyStructure};
 use chrono::{DateTime, TimeZone, Utc};
-use mail_parser::{AddressList, MessageParser};
+use mail_parser::{AddressList, HeaderName, MessageParser};
 
 use crate::content;
 use crate::model::{Message, Person};
@@ -23,6 +23,7 @@ pub(crate) enum Body<'a> {
         mime: Option<&'a [u8]>,
         data: &'a [u8],
         attachments: Vec<String>,
+        html: bool,
     },
 }
 
@@ -40,6 +41,7 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
             mime,
             data,
             attachments,
+            html,
         } => {
             let mut raw = mime.unwrap_or(b"Content-Type: text/plain\r\n\r\n").to_vec();
             raw.extend_from_slice(data);
@@ -47,7 +49,7 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
                 .parse(&raw)
                 .map(|part| content::text_of(&part))
                 .unwrap_or_default();
-            (text, attachments.clone(), true, true)
+            (text, attachments.clone(), true, *html)
         }
     };
     let date = headers
@@ -78,10 +80,30 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
         seen: fetched.seen,
         partial,
         html,
+        list: headers.headers().iter().any(|header| {
+            matches!(
+                header.name(),
+                HeaderName::ListId | HeaderName::ListUnsubscribe
+            )
+        }),
         flagged: false,
         reaction: content::reaction(&headers),
         invite: content::invite(&headers),
     })
+}
+
+pub(crate) fn has_html(structure: &BodyStructure<'_>) -> bool {
+    match structure {
+        BodyStructure::Multipart { bodies, .. } => bodies.iter().any(has_html),
+        BodyStructure::Text { common, .. } => {
+            common.ty.subtype.eq_ignore_ascii_case("html")
+                && !common
+                    .disposition
+                    .as_ref()
+                    .is_some_and(|disposition| disposition.ty.eq_ignore_ascii_case("attachment"))
+        }
+        BodyStructure::Basic { .. } | BodyStructure::Message { .. } => false,
+    }
 }
 
 pub(crate) fn attachment_names(structure: &BodyStructure<'_>) -> Vec<String> {
@@ -244,6 +266,7 @@ Content-Type: text/html; charset=utf-8\r\n\
                 mime: Some(b"Content-Type: text/plain; charset=utf-8\r\n\r\n"),
                 data: b"Here they are.",
                 attachments: vec!["beach.jpg".into()],
+                html: false,
             },
             arrived: None,
         })
@@ -251,6 +274,15 @@ Content-Type: text/html; charset=utf-8\r\n\
         assert_eq!(message.text, "Here they are.");
         assert_eq!(message.attachments, ["beach.jpg"]);
         assert!(message.partial);
+        assert!(!message.html);
+    }
+
+    #[test]
+    fn marks_mailing_list_mail() {
+        let listed = b"From: news@example.com\r\nList-Unsubscribe: <mailto:leave@example.com>\r\nSubject: News\r\n\r\nHello";
+        let personal = b"From: a@example.com\r\nSubject: Hi\r\n\r\nHello";
+        assert!(whole(listed).list);
+        assert!(!whole(personal).list);
     }
 
     #[test]

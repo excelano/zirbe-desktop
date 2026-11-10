@@ -62,6 +62,7 @@ pub trait MailSource {
     fn send(&self, draft: Draft) -> Reply;
     fn mark_read(&self, conversation: &Conversation);
     fn change(&self, conversations: &[Conversation], scope: &Scope, change: Change);
+    fn empty(&self, account: &str, mailbox: &str);
     fn arrivals(&self) -> Vec<Arrival>;
     fn search_server(&self, scope: &Scope, text: &str) -> Reply<usize>;
     fn original(&self, account: &str, message: &Message) -> Reply<Original>;
@@ -89,6 +90,22 @@ struct Shared {
 }
 
 impl Shared {
+    fn hide(&self, account: &str, keys: &[String]) {
+        self.leaving
+            .lock()
+            .expect("leaving lock")
+            .extend(keys.iter().map(|key| (account.to_string(), key.clone())));
+        let mut published = self.published.write().expect("published lock");
+        published.conversations = self.present(published.conversations.as_ref().clone());
+    }
+
+    fn unhide(&self, account: &str, keys: &[String]) {
+        self.leaving
+            .lock()
+            .expect("leaving lock")
+            .retain(|(owner, key)| owner != account || !keys.contains(key));
+    }
+
     fn present(&self, conversations: Vec<Conversation>) -> Arc<Vec<Conversation>> {
         let leaving = self.leaving.lock().expect("leaving lock");
         Arc::new(
@@ -157,6 +174,12 @@ enum Command {
         ids: Vec<String>,
         change: Change,
         targets: Vec<Target>,
+    },
+    Empty {
+        account: String,
+        mailbox: String,
+        keys: Vec<String>,
+        highest: u32,
     },
     Email {
         account: String,
@@ -380,7 +403,7 @@ impl MailSource for Store {
                 .push(conversation);
         }
         for (account, conversations) in by_account {
-            let keys = conversations.iter().map(|c| c.key.clone()).collect();
+            let keys: Vec<String> = conversations.iter().map(|c| c.key.clone()).collect();
             let ids = conversations
                 .iter()
                 .flat_map(|c| &c.copies)
@@ -394,15 +417,7 @@ impl MailSource for Store {
                 continue;
             }
             if change.leaves() {
-                self.shared.leaving.lock().expect("leaving lock").extend(
-                    conversations
-                        .iter()
-                        .map(|c| (account.to_string(), c.key.clone())),
-                );
-                let mut published = self.shared.published.write().expect("published lock");
-                published.conversations = self
-                    .shared
-                    .present(published.conversations.as_ref().clone());
+                self.shared.hide(account, &keys);
             }
             let _ = self.commands.send(Command::Change {
                 account: account.to_string(),
@@ -412,6 +427,32 @@ impl MailSource for Store {
                 targets,
             });
         }
+        (self.shared.notify)();
+    }
+
+    fn empty(&self, account: &str, mailbox: &str) {
+        let conversations = self.conversations();
+        let held: Vec<&Conversation> = conversations
+            .iter()
+            .filter(|c| c.account == account && c.copies.iter().any(|copy| copy.mailbox == mailbox))
+            .collect();
+        let Some(highest) = held
+            .iter()
+            .flat_map(|c| &c.copies)
+            .filter(|copy| copy.mailbox == mailbox)
+            .map(|copy| copy.uid)
+            .max()
+        else {
+            return;
+        };
+        let keys: Vec<String> = held.iter().map(|c| c.key.clone()).collect();
+        self.shared.hide(account, &keys);
+        let _ = self.commands.send(Command::Empty {
+            account: account.to_string(),
+            mailbox: mailbox.to_string(),
+            keys,
+            highest,
+        });
         (self.shared.notify)();
     }
 
@@ -689,6 +730,12 @@ impl Worker {
                 change,
                 targets,
             } => self.change(&account, keys, ids, change, targets).await,
+            Command::Empty {
+                account,
+                mailbox,
+                keys,
+                highest,
+            } => self.empty(&account, &mailbox, &keys, highest).await,
             Command::Email {
                 account,
                 mailbox,
@@ -1084,11 +1131,7 @@ impl Worker {
         targets: Vec<Target>,
     ) {
         if change.leaves() {
-            self.shared
-                .leaving
-                .lock()
-                .expect("leaving lock")
-                .retain(|(owner, key)| owner != account || !keys.contains(key));
+            self.shared.unhide(account, &keys);
         }
         let Some(known) = self.account(account) else {
             return;
@@ -1220,6 +1263,41 @@ impl Worker {
                 self.set_status(Status::Failed(format!("{}: {error}", known.address)));
                 self.sync_accounts(vec![known]).await;
             }
+        }
+    }
+
+    async fn empty(&mut self, account: &str, name: &str, keys: &[String], highest: u32) {
+        self.shared.unhide(account, keys);
+        let (Some(known), Some(data)) = (self.account(account), self.data.get_mut(account)) else {
+            self.publish();
+            return;
+        };
+        let unread = data.mailbox_mut(name).map(|mailbox| {
+            mailbox.messages.retain(|uid, _| *uid > highest);
+            mailbox.found.retain(|uid| *uid > highest);
+            mailbox
+                .messages
+                .values()
+                .filter(|message| !message.seen)
+                .count() as u32
+        });
+        if let Some(folder) = data.folders.iter_mut().find(|folder| folder.name == name) {
+            folder.unread = unread.unwrap_or(0);
+        }
+        self.save_data(account);
+        self.publish();
+        let host = known.imap_host.trim().to_string();
+        let result = async {
+            let password = Self::password(account).await?;
+            let mut connection = Connection::open(&known, &password).await?;
+            let emptied = connection.empty(&host, name, highest).await;
+            connection.close().await;
+            emptied
+        }
+        .await;
+        if let Err(error) = result {
+            self.set_status(Status::Failed(format!("{}: {error}", known.address)));
+            self.sync_accounts(vec![known]).await;
         }
     }
 

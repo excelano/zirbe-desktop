@@ -92,6 +92,7 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
                 seen: line.seen,
                 partial: false,
                 html: !mine,
+                list: false,
                 flagged: false,
                 reaction: None,
                 invite: None,
@@ -392,6 +393,7 @@ impl MailSource for Demo {
             seen: true,
             partial: false,
             html: false,
+            list: false,
             flagged: false,
             reaction: draft.reaction.clone(),
             invite: None,
@@ -484,6 +486,19 @@ impl MailSource for Demo {
                 std::cmp::Reverse(conversation.latest()),
             )
         });
+        *guard = Arc::new(conversations);
+    }
+
+    fn empty(&self, _account: &str, mailbox: &str) {
+        let mut guard = self.conversations.lock().expect("demo lock");
+        let mut conversations: Vec<Conversation> = guard.as_ref().clone();
+        for conversation in &mut conversations {
+            conversation
+                .messages
+                .retain(|message| message.mailbox != mailbox);
+            settle(conversation);
+        }
+        conversations.retain(|conversation| !conversation.messages.is_empty());
         *guard = Arc::new(conversations);
     }
 

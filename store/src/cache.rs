@@ -20,7 +20,7 @@ pub(crate) struct Mailbox {
     pub found: BTreeSet<u32>,
 }
 
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 3;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -162,6 +162,6 @@ mod tests {
         assert_eq!(sent.name, "INBOX.Sent");
         assert!(sent.messages.is_empty());
         assert_eq!(data.unfiled[0].mailbox, "INBOX.Sent");
-        assert_eq!(data.format, 2);
+        assert_eq!(data.format, super::FORMAT);
     }
 }

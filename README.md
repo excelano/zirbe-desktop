@@ -20,10 +20,16 @@ switches to one account's folder instead; a conversation shows in each folder
 holding one of its messages, always as the whole thread. A conversation can be
 archived, trashed, moved, sent to Junk, flagged, pinned to the top or marked
 read or unread from the buttons above it, from its right-click menu, or with
-E for Archive, Delete for Trash and Shift+U for read or unread; Ctrl-click and
-Shift-click pick several at once, and Unread at the foot of the list hides the
-ones already read. Archive makes an Archive folder if the account has none, and
-Delete inside Trash removes for good after asking. New mail in an inbox shows
+E for Archive, Delete for Trash and Shift+U for read or unread. The Up and Down
+arrows step through the list; Shift with an arrow, Shift-click and Ctrl-click
+pick several at once, and Ctrl+A or Select All in the ⋯ menu above the list
+picks every conversation shown, which the same menu can also mark read. Filter
+at the foot of the list narrows it to conversations that are unread or read,
+plain text or HTML, from people or from mailing lists, flagged, or carrying
+attachments. Archive makes an Archive folder if the account has none, Delete
+inside Trash removes for good after asking, and Empty Trash or Empty Junk at
+the top of those folders deletes everything in them after asking, keeping any
+mail that arrived since the last check. New mail in an inbox shows
 within seconds, and while Zirbe is open but not in front it posts a
 notification for each new message, which opens the conversation when clicked;
 Settings can turn the notifications off. The search field above the list
@@ -54,7 +60,9 @@ conversations in All Inboxes; an account whose server starts refusing the saved
 password says so there and takes a new one with Sign In Again; and the list can
 show none to three lines of each conversation's latest message. Block, in a
 conversation's menu, moves that sender's mail to Junk now and at every check
-for mail after, until the sender is unblocked in Settings. If the copy of a sent message cannot be
+for mail after, until the sender is unblocked in Settings; Trash All from the
+same menu moves every conversation in the folder shown whose mail comes only
+from that sender to Trash. If the copy of a sent message cannot be
 saved to the server's Sent folder, the status line says so and Zirbe keeps
 trying at every check for mail. Mail you sent
 is read from the account's Sent folder and sits on the right, so a thread reads

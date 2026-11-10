@@ -10,6 +10,7 @@ mod composer;
 mod dates;
 mod demo;
 mod files;
+mod filter;
 mod list;
 mod notify;
 mod page;
