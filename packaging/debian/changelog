@@ -1,3 +1,11 @@
+zirbe (0.9.0) unstable; urgency=medium
+
+  * Recipient suggestions and sender photos come from the desktop address book that GNOME Contacts and Evolution keep
+  * Shift+Enter starts a new line in a reply instead of sending it
+  * Web View and Show Images open the message again
+
+ -- David M. Anderson <david.anderson@excelano.com>  Tue, 10 Nov 2026 19:08:20 -0600
+
 zirbe (0.8.0) unstable; urgency=medium
 
   * Email View is now called Web View
