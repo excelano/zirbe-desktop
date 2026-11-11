@@ -2252,7 +2252,18 @@ impl App {
         }
         let editor_id = egui::Id::unique(("composer", &key));
         let focused = ui.ctx().memory(|memory| memory.has_focus(editor_id));
-        let enter = focused && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
+        let enter = focused
+            && ui.input_mut(|input| {
+                let before = input.events.len();
+                input.events.retain(|event| {
+                    !matches!(
+                        event,
+                        egui::Event::Key { key: Key::Enter, pressed: true, modifiers, .. }
+                            if modifiers.is_none()
+                    )
+                });
+                input.events.len() != before
+            });
         let mut send = false;
         let mut pick = false;
         ui.horizontal(|ui| {
