@@ -49,14 +49,14 @@ Drafts folder brings it back to finish. A reply that fails to send keeps a
 Retry button, and a note between messages says when someone joins or leaves the
 conversation. Image attachments show as pictures under their message, fetched
 when the message comes into view. An invitation shows as a card with its time,
-place and organiser, a Join button for Teams, Meet, Zoom and Webex links, and
+place and organizer, a Join button for Teams, Meet, Zoom and Webex links, and
 Add to Calendar, which hands the invitation to the calendar application; answers
 to it read as a line such as "Ana accepted". The right-click menu also reacts
 to a message with 👍 👎 ❤ 😂 ‼ or ❓, shown at once and sent after five seconds
 unless undone; a reaction is a short reply with an X-Zirbe-Reaction header, the
 same as the iPhone app sends, so each app shows the other's reactions as
 badges, and Gmail's reactions show the same way. In Settings each account
-can have a label and one of eight colours, shown as a dot beside its
+can have a label and one of eight colors, shown as a dot beside its
 conversations in All Inboxes; an account whose server starts refusing the saved
 password says so there and takes a new one with Sign In Again; and the list can
 show none to three lines of each conversation's latest message. Block, in a
@@ -106,26 +106,19 @@ password in the desktop keyring under `service=zirbe`.
 
 ## Privacy
 
-Account settings, without the password, are kept in `~/.config/zirbe`, and the
-newest messages of each inbox, Sent folder and folder you have opened in
-`~/.cache/zirbe`, readable only
-by you. Messages are shown as text. A message with an HTML version carries
+Messages are shown as text. A message with an HTML version carries
 Web View and Show Images at the top of its bubble. Web View downloads that
 message again from your server and shows its full HTML in the reading pane,
 drawn by Zirbe itself with nothing loaded from the network; pictures the sender
 embedded in the message still show. Show Images loads the sender's linked
 pictures too, which can tell the sender you opened the message and roughly
 where you are. Settings can open HTML email in Web View and load its pictures
-without being asked; both are off until you turn them on. Links open in your browser. An attachment
-is downloaded from your server when you open or save it; one you open is
-written to a private folder under `$XDG_RUNTIME_DIR/zirbe`, which Zirbe empties
-each time it starts and the system clears at logout. Apart from those
-images, the only connections are to your own IMAP and SMTP servers. Recipient
-suggestions and sender photos come from the address book that GNOME Contacts
-and Evolution keep (Evolution Data Server) on the session bus. Zirbe only reads
-it, and shows a photo only when it is stored in the contact card or on this
-computer, never one that would have to be downloaded.
+without being asked; both are off until you turn them on. Links open in your
+browser. Apart from those images, the only connections are to your own IMAP and
+SMTP servers. [SECURITY.md](SECURITY.md#what-zirbe-can-access) says what else
+Zirbe reads, and [What Zirbe stores](SECURITY.md#what-zirbe-stores) where it
+keeps your mail, settings and password.
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).

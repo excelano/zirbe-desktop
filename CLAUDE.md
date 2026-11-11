@@ -5,7 +5,8 @@ egui application. It is the desktop sibling of excelano/zirbe, the iPhone and
 iPad app, and keeps that app's model and principles: a conversation is an email
 thread joined by Message-ID, In-Reply-To and References; the subject is its
 name; only the email standards are implemented; the only network destinations
-are the user's own mail servers.
+are the user's own mail servers, and a message's image sources once the user
+chooses Show Images for it.
 
 ## Layout
 

@@ -2,19 +2,15 @@
 
 ## Reporting a vulnerability
 
-Please report suspected vulnerabilities privately through GitHub Security
-Advisories at https://github.com/excelano/zirbe-desktop/security/advisories/new.
-If you would rather not use GitHub, email david.anderson@excelano.com instead. I
-aim to respond within seven days.
+Please report suspected vulnerabilities privately, using the **Report a vulnerability** button on the Security tab of this repository. If that button is not there, or you would rather not go through GitHub, email david.anderson@excelano.com instead. I aim to respond within seven days.
 
 Please do not open public issues for security problems.
 
 ## Supported versions
 
-The latest 0.x release receives security fixes. Older versions are not
-supported.
+The latest release receives security fixes. Older versions are not supported. A fix ships in a new release; update the way you installed.
 
-## What this application is
+## What Zirbe can access
 
 Zirbe reads mail from the IMAP account a user signs in to and sends mail through
 that account's SMTP server. It connects to those two servers and to nothing else.
@@ -37,15 +33,25 @@ an image. Links open in the system browser. A crash or hang on a malformed or
 hostile message, or anything in Web View that reaches the network beyond
 those images, is worth reporting.
 
-## What it stores
+On the session bus, Zirbe reads the address book that GNOME Contacts and
+Evolution keep (Evolution Data Server) for recipient suggestions and sender
+photos, and never writes to it; a photo is shown only when it is in the contact
+card or in a file on this computer, never fetched from a URL. It also posts
+new-mail notifications and the launcher's unread count there.
+
+## What Zirbe stores
 
 Each account's password, in the system keyring (the Secret Service on Linux),
-never on disk by Zirbe itself. The account's address, name and servers, in
-`~/.config/zirbe/accounts.json`. The account's folder list, and the newest
-messages of its inbox, its Sent folder and each folder the user has opened, in
-`~/.cache/zirbe`, written readable by their owner only.
+never on disk by Zirbe itself. The account's address, name, label, color and
+servers, in `~/.config/zirbe/accounts.json`, and the display and notification
+settings in `~/.config/zirbe/settings.json`. The account's folder list, its
+blocked senders, and the newest messages of its inbox, its Sent folder and each
+folder the user has opened, in `~/.cache/zirbe`, written readable by their
+owner only. An attachment the user opens is written to a private folder under
+`$XDG_RUNTIME_DIR/zirbe`, which Zirbe empties each time it starts and the
+system clears at logout.
 
 ## Verifying releases
 
-Every release lists a SHA-256 for each artefact. Verify a download before
+Every release lists a SHA-256 for each artifact. Verify a download before
 running it.
