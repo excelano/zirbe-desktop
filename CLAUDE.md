@@ -68,7 +68,8 @@ closes, `ZIRBE_SCREENSHOT_SIZE=<w>x<h>` sizes the window, and
 first. To drive it with keys and clicks, run it on `Xvfb` with `DISPLAY`
 pointed there and `WAYLAND_DISPLAY` unset, or winit opens the window on the
 session's Wayland display and `xdotool` reaches nothing; with no window
-manager on `Xvfb`, input goes to the window under the pointer. The `sync` example signs in, syncs, prints the conversations and signs
+manager on `Xvfb`, clicks go to the window under the pointer, but keys reach
+nothing until `xdotool windowfocus` gives the window the keyboard. The `sync` example signs in, syncs, prints the conversations and signs
 out again in a scratch profile. Point `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` at a scratch directory to
 run against a live account without touching the real profile.
 
