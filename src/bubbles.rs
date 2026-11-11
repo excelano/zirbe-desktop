@@ -659,6 +659,12 @@ fn bubble(
         );
         list::avatar(ui, spot, message.from.as_ref());
     }
+    let mut area = ui.interact(
+        shape,
+        ui.scope_id()
+            .with(("bubble", message.uid, &message.message_id)),
+        Sense::click(),
+    );
     let mut chosen = None;
     let inside = shape.shrink2(PADDING);
     let mut top = inside.top();
@@ -699,12 +705,6 @@ fn bubble(
         }
         top += CONTROLS + CHIP_GAP;
     }
-    let mut area = ui.interact(
-        shape,
-        ui.scope_id()
-            .with(("bubble", message.uid, &message.message_id)),
-        Sense::click(),
-    );
     if has_text {
         let text_rect = Rect::from_min_size(pos2(inside.left(), top), text).expand2(vec2(1.0, 0.0));
         let label = ui
