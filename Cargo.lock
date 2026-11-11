@@ -5821,9 +5821,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
+checksum = "7265c9301c16a8711c992c2d8da90ee77ef54b1ed51482d6dfeb00dc756b1297"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -6656,7 +6656,7 @@ dependencies = [
 
 [[package]]
 name = "zirbe"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",
@@ -6683,7 +6683,7 @@ dependencies = [
 
 [[package]]
 name = "zirbe-store"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "apple-native-keyring-store",
  "async-imap",
