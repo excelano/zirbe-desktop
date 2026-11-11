@@ -42,7 +42,8 @@ its attachments, copies its text, or shows the quoted history Zirbe folds away.
 Above the reply box are the people a reply reaches, any of whom can be left out
 of it, and files can be attached with the paperclip or by dropping them on the
 window. A new conversation has Cc and Bcc, takes its name from its people when
-it has no subject, suggests addresses from the mail already synced, and can be
+it has no subject, suggests addresses from the mail already synced and from the
+desktop's address book, and can be
 saved to the server's Drafts folder instead of sent; opening a draft from the
 Drafts folder brings it back to finish. A reply that fails to send keeps a
 Retry button, and a note between messages says when someone joins or leaves the
@@ -119,7 +120,11 @@ without being asked; both are off until you turn them on. Links open in your bro
 is downloaded from your server when you open or save it; one you open is
 written to a private folder under `$XDG_RUNTIME_DIR/zirbe`, which Zirbe empties
 each time it starts and the system clears at logout. Apart from those
-images, the only connections are to your own IMAP and SMTP servers.
+images, the only connections are to your own IMAP and SMTP servers. Recipient
+suggestions and sender photos come from the address book that GNOME Contacts
+and Evolution keep (Evolution Data Server) on the session bus. Zirbe only reads
+it, and shows a photo only when it is stored in the contact card or on this
+computer, never one that would have to be downloaded.
 
 ## License
 

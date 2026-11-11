@@ -5,6 +5,7 @@ use chrono::NaiveDate;
 use eframe::egui::{self, Align2, FontId, Rect, Response, Sense, Ui, pos2, vec2};
 use zirbe_store::{Conversation, Person};
 
+use crate::contacts::Faces;
 use crate::dates;
 use crate::palette::{self, Palette};
 use crate::system::Clock;
@@ -13,9 +14,10 @@ pub fn height(lines: u8) -> f32 {
     54.0 + 18.0 * f32::from(lines)
 }
 
-pub struct Look {
+pub struct Look<'a> {
     pub lines: u8,
     pub dot: Option<egui::Color32>,
+    pub faces: &'a Faces,
 }
 const AVATAR: f32 = 40.0;
 
@@ -65,7 +67,13 @@ pub fn initials(person: Option<&Person>) -> String {
     }
 }
 
-pub fn avatar(ui: &Ui, rect: Rect, person: Option<&Person>) {
+pub fn avatar(ui: &Ui, rect: Rect, person: Option<&Person>, faces: &Faces) {
+    if let Some(face) = faces.of(person) {
+        egui::Image::new((face.id(), rect.size()))
+            .corner_radius(rect.width() / 2.0)
+            .paint_at(ui, rect);
+        return;
+    }
     let painter = ui.painter();
     let center = rect.center();
     let seed = person.map_or("", |person| person.address.as_str());
@@ -100,7 +108,7 @@ pub fn row(
     today: NaiveDate,
     clock: Clock,
     palette: &Palette,
-    look: &Look,
+    look: &Look<'_>,
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(
         vec2(ui.available_width(), height(look.lines)),
@@ -141,7 +149,7 @@ pub fn row(
                 .any(|member| member.is(&from.address))
         })
         .or(conversation.members.first());
-    avatar(ui, avatar_rect, lead);
+    avatar(ui, avatar_rect, lead, look.faces);
     if let Some(colour) = look.dot {
         let spot = avatar_rect.right_bottom() - vec2(5.0, 5.0);
         ui.painter().circle_filled(spot, 6.0, palette.sidebar);

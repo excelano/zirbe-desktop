@@ -8,7 +8,11 @@ use zirbe_store::{Account, Conversation, Person, Query};
 
 const SHOWN: usize = 6;
 
-pub fn known(conversations: &[Conversation], accounts: &[Account]) -> Vec<Person> {
+pub fn known(
+    conversations: &[Conversation],
+    contacts: &[Person],
+    accounts: &[Account],
+) -> Vec<Person> {
     let mut seen: HashMap<String, (Person, usize, bool)> = HashMap::new();
     for message in conversations.iter().flat_map(|c| &c.messages) {
         let mine = message
@@ -30,8 +34,23 @@ pub fn known(conversations: &[Conversation], accounts: &[Account]) -> Vec<Person
             }
         }
     }
+    for contact in contacts {
+        if accounts.iter().any(|account| contact.is(&account.address)) {
+            continue;
+        }
+        let entry = seen
+            .entry(contact.address.to_lowercase())
+            .or_insert_with(|| (contact.clone(), 0, false));
+        if contact.name.is_some() {
+            entry.0.name = contact.name.clone();
+        }
+    }
     let mut people: Vec<(Person, usize, bool)> = seen.into_values().collect();
-    people.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
+    people.sort_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then(b.1.cmp(&a.1))
+            .then_with(|| a.0.display().cmp(b.0.display()))
+    });
     people.into_iter().map(|(person, _, _)| person).collect()
 }
 

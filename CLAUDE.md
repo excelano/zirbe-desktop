@@ -32,7 +32,10 @@ saving it there. The app crate is the window: `app.rs` lays it out, `list.rs` dr
 conversation rows, `filter.rs` the list's filter, `bubbles.rs` the messages and their attachment chips,
 `files.rs` opening, saving, picking and dropping files, `composer.rs` the
 new-conversation, forward and draft pane, `people.rs` recipient suggestions
-drawn from the synced mail, `notify.rs` new-mail notifications
+drawn from the synced mail and `contacts.rs` the desktop address book
+(Evolution Data Server over the session bus: names and addresses for
+suggestions, photos for avatars from the card or a local file and never a URL,
+checked each minute and reread when a book's revision changes), `notify.rs` new-mail notifications
 and the launcher's unread count over the session bus, `signin.rs` the account form,
 `demo.rs` the sample conversations behind `--demo`, and `page.rs` the Email
 View: Blitz (`blitz-html`, pinned to an exact beta) lays out and paints a

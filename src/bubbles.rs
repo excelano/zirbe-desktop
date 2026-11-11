@@ -12,6 +12,7 @@ use eframe::egui::{
 };
 use zirbe_store::{Conversation, Message, When};
 
+use crate::contacts::Faces;
 use crate::dates;
 use crate::list;
 use crate::palette::Palette;
@@ -78,6 +79,7 @@ pub struct View<'a> {
     pub found: &'a [usize],
     pub current: Option<usize>,
     pub scroll: bool,
+    pub faces: &'a Faces,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -91,6 +93,7 @@ struct Style<'a> {
     palette: &'a Palette,
     images_by_default: bool,
     expanded: &'a HashMap<String, String>,
+    faces: &'a Faces,
 }
 
 fn reactions_of(
@@ -145,6 +148,7 @@ pub fn show(
         palette,
         images_by_default: view.images_by_default,
         expanded: view.expanded,
+        faces: view.faces,
     };
     let reactions = reactions_of(conversation, view.pending, me);
     let mut action = None;
@@ -657,7 +661,7 @@ fn bubble(
             pos2(row.left() + EDGE, row.bottom() - AVATAR),
             vec2(AVATAR, AVATAR),
         );
-        list::avatar(ui, spot, message.from.as_ref());
+        list::avatar(ui, spot, message.from.as_ref(), style.faces);
     }
     let mut area = ui.interact(
         shape,

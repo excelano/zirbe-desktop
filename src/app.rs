@@ -18,6 +18,7 @@ use zirbe_store::{
 
 use crate::bubbles::{self, Action, Choice};
 use crate::composer::{self, Composer};
+use crate::contacts::Contacts;
 use crate::dates;
 use crate::demo::Demo;
 use crate::files;
@@ -257,6 +258,7 @@ pub struct App {
     expanded: HashMap<String, String>,
     opening_draft: Option<String>,
     known: Option<(usize, Vec<Person>)>,
+    contacts: Contacts,
     labels: HashMap<String, String>,
     reauth: HashMap<String, (String, Option<Reply>, Option<String>)>,
     confirm_block: Option<(String, Person)>,
@@ -308,6 +310,7 @@ impl App {
             expanded: HashMap::new(),
             opening_draft: None,
             known: None,
+            contacts: Contacts::default(),
             labels: HashMap::new(),
             reauth: HashMap::new(),
             confirm_block: None,
@@ -706,6 +709,7 @@ impl App {
                                 dot: several
                                     .then(|| colours.get(&conversation.account).copied())
                                     .flatten(),
+                                faces: self.contacts.faces(),
                             };
                             let response = list::row(
                                 ui,
@@ -1833,6 +1837,7 @@ impl App {
                                     found: &found,
                                     current,
                                     scroll,
+                                    faces: self.contacts.faces(),
                                 },
                             )
                         })
@@ -2346,7 +2351,8 @@ impl App {
         let accounts = self.source.mail().accounts();
         let source = Arc::as_ptr(conversations) as usize;
         if self.known.as_ref().is_none_or(|(from, _)| *from != source) {
-            self.known = Some((source, people::known(conversations, &accounts)));
+            let known = people::known(conversations, self.contacts.people(), &accounts);
+            self.known = Some((source, known));
         }
         let known = self
             .known
@@ -2614,6 +2620,9 @@ impl eframe::App for App {
         self.poll_fetching(&ctx);
         self.poll_thumbs(&ctx);
         self.poll_reactions(&ctx);
+        if !matches!(self.source, Source::Demo(_)) && self.contacts.poll(&ctx) {
+            self.known = None;
+        }
         let needs_account = match &self.source {
             Source::Live(store) => {
                 store.accounts().is_empty() && matches!(store.status(), Status::NoAccounts)

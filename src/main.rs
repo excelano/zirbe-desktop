@@ -7,6 +7,7 @@
 mod app;
 mod bubbles;
 mod composer;
+mod contacts;
 mod dates;
 mod demo;
 mod files;
