@@ -1,3 +1,9 @@
+zirbe (0.10.0) unstable; urgency=medium
+
+  * Open a private reply as its own conversation, and count an account's other addresses as yours
+
+ -- David M. Anderson <david.anderson@excelano.com>  Wed, 11 Nov 2026 19:54:15 -0600
+
 zirbe (0.9.1) unstable; urgency=medium
 
   * Label a private reply with its recipient instead of showing people joining and leaving
