@@ -18,10 +18,10 @@ pub fn known(
         let mine = message
             .from
             .as_ref()
-            .is_some_and(|from| accounts.iter().any(|a| from.is(&a.address)));
+            .is_some_and(|from| accounts.iter().any(|a| a.owns(&from.address)));
         let people = message.from.iter().chain(&message.to).chain(&message.cc);
         for person in people {
-            if accounts.iter().any(|account| person.is(&account.address)) {
+            if accounts.iter().any(|account| account.owns(&person.address)) {
                 continue;
             }
             let entry = seen
@@ -35,7 +35,10 @@ pub fn known(
         }
     }
     for contact in contacts {
-        if accounts.iter().any(|account| contact.is(&account.address)) {
+        if accounts
+            .iter()
+            .any(|account| account.owns(&contact.address))
+        {
             continue;
         }
         let entry = seen

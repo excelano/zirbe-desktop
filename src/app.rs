@@ -260,6 +260,7 @@ pub struct App {
     known: Option<(usize, Vec<Person>)>,
     contacts: Contacts,
     labels: HashMap<String, String>,
+    aliases: HashMap<String, String>,
     reauth: HashMap<String, (String, Option<Reply>, Option<String>)>,
     confirm_block: Option<(String, Person)>,
     thumbs: HashMap<String, bubbles::Thumb>,
@@ -312,6 +313,7 @@ impl App {
             known: None,
             contacts: Contacts::default(),
             labels: HashMap::new(),
+            aliases: HashMap::new(),
             reauth: HashMap::new(),
             confirm_block: None,
             thumbs: HashMap::new(),
@@ -1795,11 +1797,10 @@ impl App {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(palette.canvas))
             .show(ui, |ui| {
-                let me = account
-                    .as_ref()
-                    .map_or(conversation.account.as_str(), |account| {
-                        account.address.as_str()
-                    });
+                let me = account.clone().unwrap_or_else(|| Account {
+                    address: conversation.account.clone(),
+                    ..Account::default()
+                });
                 let wanted = std::cell::RefCell::new(Vec::new());
                 let action = ScrollArea::vertical()
                     .id_salt(&conversation.key)
@@ -1811,7 +1812,7 @@ impl App {
                             bubbles::show(
                                 ui,
                                 &conversation,
-                                me,
+                                &me,
                                 dates::today(),
                                 self.clock,
                                 &palette,
@@ -2489,6 +2490,28 @@ impl App {
                 .changed()
             {
                 changed.label = label.clone();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Other addresses");
+            let aliases = self
+                .aliases
+                .entry(key.clone())
+                .or_insert_with(|| account.aliases.join(", "));
+            if ui
+                .add(
+                    TextEdit::singleline(aliases)
+                        .hint_text("hello@example.com, …")
+                        .desired_width(260.0),
+                )
+                .changed()
+            {
+                changed.aliases = aliases
+                    .split([',', ' ', ';'])
+                    .map(str::trim)
+                    .filter(|address| address.contains('@'))
+                    .map(str::to_lowercase)
+                    .collect();
             }
         });
         ui.horizontal(|ui| {

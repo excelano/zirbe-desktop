@@ -3,10 +3,12 @@
 Zirbe for the Linux desktop: an IMAP and SMTP account read as conversations, an
 egui application. It is the desktop sibling of excelano/zirbe, the iPhone and
 iPad app, and keeps that app's model and principles: a conversation is an email
-thread joined by Message-ID, In-Reply-To and References; the subject is its
-name; only the email standards are implemented; the only network destinations
-are the user's own mail servers, and a message's image sources once the user
-chooses Show Images for it.
+thread joined by Message-ID, In-Reply-To and References, less any private reply
+out of it (one sharing no one with the message it answers, or narrowing a group
+to one person, the account's own addresses and aliases aside), which starts a
+conversation of its own; the subject is its name; only the email standards are
+implemented; the only network destinations are the user's own mail servers, and
+a message's image sources once the user chooses Show Images for it.
 
 ## Layout
 
@@ -18,9 +20,10 @@ The store crate, `store/` (`zirbe-store`), is the mail engine behind
 `actions.rs` (which copies of a conversation's messages a change touches),
 `search.rs` (word-start matching that ignores case and accents), `invite.rs`
 (the text/calendar reader behind invitation cards),
-`thread.rs` (grouping by the threading headers, keeping every copy of a message
-filed in several folders), `compose.rs` (reply recipients and the
-outgoing message), `secrets.rs` (keyring-core) and `cache.rs`. Its worker thread
+`thread.rs` (grouping by the threading headers, splitting off private replies
+with the message they answer as context outside the conversation's copies,
+keeping every copy of a message filed in several folders), `compose.rs` (reply
+recipients and the outgoing message), `secrets.rs` (keyring-core) and `cache.rs`. Its worker thread
 runs tokio, syncs on a timer, and publishes snapshots the window reads without
 waiting. Every sync lists each account's folders and fetches INBOX and Sent;
 another folder is fetched only while it is the one open, and stays cached

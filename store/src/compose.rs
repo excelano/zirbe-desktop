@@ -26,11 +26,14 @@ pub fn reply(
     let Some(latest) = target.or(conversation.last()) else {
         return draft;
     };
-    let mut placed: HashSet<String> = HashSet::from([account.key()]);
+    let mut placed: HashSet<String> = std::iter::once(&account.address)
+        .chain(&account.aliases)
+        .map(|address| address.trim().to_lowercase())
+        .collect();
     let from_me = latest
         .from
         .as_ref()
-        .is_some_and(|from| from.is(&account.address));
+        .is_some_and(|from| account.owns(&from.address));
     let first = if from_me { None } else { latest.from.as_ref() };
     for person in first.into_iter().chain(&latest.to) {
         if placed.insert(person.address.to_lowercase()) {
@@ -274,12 +277,30 @@ mod tests {
             title: "Lunch".into(),
             members: Vec::new(),
             messages,
+            starts_with_context: false,
             unread: 0,
             in_inbox: true,
             flagged: false,
             pinned: false,
             copies: Vec::new(),
         }
+    }
+
+    #[test]
+    fn leaves_my_other_addresses_off_a_reply() {
+        let mut latest = message("a", &[], "ilyas@example.com", 1);
+        latest.to = vec![Person {
+            name: None,
+            address: "Hello@example.org".into(),
+        }];
+        let mine = Account {
+            aliases: vec!["hello@example.org".into()],
+            ..account()
+        };
+        let draft = reply(&conversation(vec![latest]), &mine, String::new(), None);
+        let to: Vec<&str> = draft.to.iter().map(|p| p.address.as_str()).collect();
+        assert_eq!(to, ["ilyas@example.com"]);
+        assert!(draft.cc.is_empty());
     }
 
     #[test]

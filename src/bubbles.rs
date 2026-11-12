@@ -10,7 +10,7 @@ use eframe::egui::{
     self, Align, Color32, CornerRadius, FontId, Layout, Rect, RichText, Sense, TextFormat, Ui,
     UiBuilder, Vec2, pos2, vec2,
 };
-use zirbe_store::{Conversation, Message, When};
+use zirbe_store::{Account, Conversation, Message, When};
 
 use crate::contacts::Faces;
 use crate::dates;
@@ -138,7 +138,7 @@ pub struct Action {
 pub fn show(
     ui: &mut Ui,
     conversation: &Conversation,
-    me: &str,
+    me: &Account,
     today: NaiveDate,
     clock: Clock,
     palette: &Palette,
@@ -150,7 +150,7 @@ pub fn show(
         expanded: view.expanded,
         faces: view.faces,
     };
-    let reactions = reactions_of(conversation, view.pending, me);
+    let reactions = reactions_of(conversation, view.pending, &me.address);
     let mut action = None;
     let group = conversation.members.len() > 1;
     let widest = (ui.available_width() * 0.72).min(560.0);
@@ -169,7 +169,10 @@ pub fn show(
         } else {
             Mark::Plain
         };
-        let mine = message.from.as_ref().is_none_or(|from| from.is(me));
+        let mine = message
+            .from
+            .as_ref()
+            .is_none_or(|from| me.owns(&from.address));
         let new_day = previous.is_none_or(|previous| {
             previous.date.with_timezone(&Local).date_naive()
                 != message.date.with_timezone(&Local).date_naive()
@@ -289,13 +292,13 @@ pub fn show(
     action
 }
 
-fn people_of(message: &Message, me: &str) -> BTreeSet<String> {
+fn people_of(message: &Message, me: &Account) -> BTreeSet<String> {
     message
         .from
         .iter()
         .chain(&message.to)
         .chain(&message.cc)
-        .filter(|person| !person.is(me))
+        .filter(|person| !me.owns(&person.address))
         .map(|person| person.address.to_lowercase())
         .collect()
 }

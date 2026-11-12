@@ -179,6 +179,7 @@ mod tests {
             title: "Hi".into(),
             members: Vec::new(),
             messages,
+            starts_with_context: false,
             unread,
             in_inbox: true,
             flagged: false,

@@ -105,6 +105,7 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
         title: title.to_string(),
         members,
         messages,
+        starts_with_context: false,
         unread: 0,
         in_inbox: false,
         flagged: false,

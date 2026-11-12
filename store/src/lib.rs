@@ -615,6 +615,7 @@ impl Worker {
                 {
                     known.label = changed.label.trim().to_string();
                     known.colour = changed.colour;
+                    known.aliases = changed.aliases.clone();
                 }
                 self.save_accounts();
                 self.publish();
@@ -780,12 +781,7 @@ impl Worker {
             .iter()
             .filter_map(|account| {
                 let data = self.data.get(&account.key())?;
-                let mut found = thread::conversations(
-                    &account.key(),
-                    &account.address,
-                    &data.started,
-                    data.messages(),
-                );
+                let mut found = thread::conversations(account, &data.started, data.messages());
                 for conversation in &mut found {
                     conversation.pinned = data.pinned.contains(&conversation.key);
                 }
@@ -941,12 +937,16 @@ impl Worker {
                     }
                 }
             }
-            let me = account.address.trim();
             let mut fresh: Vec<Arrival> = arrived
                 .iter()
                 .filter_map(|uid| data.inbox.messages.get(uid))
                 .filter(|message| !message.seen && message.reaction.is_none())
-                .filter(|message| message.from.as_ref().is_none_or(|from| !from.is(me)))
+                .filter(|message| {
+                    message
+                        .from
+                        .as_ref()
+                        .is_none_or(|from| !account.owns(&from.address))
+                })
                 .map(|message| Arrival {
                     account: account.key(),
                     message_id: message.message_id.clone(),

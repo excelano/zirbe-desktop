@@ -16,6 +16,8 @@ pub struct Account {
     pub label: String,
     #[serde(default)]
     pub colour: Option<u8>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
 }
 
 pub const COLOURS: u8 = 8;
@@ -31,6 +33,13 @@ impl Account {
         } else {
             self.label.trim()
         }
+    }
+
+    pub fn owns(&self, address: &str) -> bool {
+        let address = address.trim();
+        std::iter::once(&self.address)
+            .chain(&self.aliases)
+            .any(|own| own.trim().eq_ignore_ascii_case(address))
     }
 
     pub fn me(&self) -> Person {
@@ -206,6 +215,7 @@ pub struct Conversation {
     pub title: String,
     pub members: Vec<Person>,
     pub messages: Vec<Message>,
+    pub starts_with_context: bool,
     pub unread: usize,
     pub in_inbox: bool,
     pub flagged: bool,

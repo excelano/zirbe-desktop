@@ -80,6 +80,7 @@ mod tests {
             pinned: false,
             copies: messages.iter().map(crate::model::Copy::of).collect(),
             messages,
+            starts_with_context: false,
         }
     }
 
