@@ -193,7 +193,8 @@ pub fn show(
             ui.add_space(4.0);
         }
         let present = people_of(message, me);
-        if let Some(before) = &people_before {
+        let mut addressed = None;
+        if let Some(before) = people_before.as_ref().filter(|before| **before != present) {
             let names = |addresses: Vec<&String>| -> String {
                 addresses
                     .into_iter()
@@ -207,20 +208,28 @@ pub fn show(
                     .collect::<Vec<_>>()
                     .join(", ")
             };
-            let joined: Vec<&String> = present.difference(before).collect();
-            let left: Vec<&String> = before.difference(&present).collect();
-            for (who, what) in [(joined, "joined"), (left, "left")] {
-                if !who.is_empty() {
-                    ui.add_space(4.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new(format!("{} {what}", names(who)))
-                                .size(11.5)
-                                .italics()
-                                .color(palette.secondary),
-                        );
-                    });
+            let answers_previous = message.in_reply_to.is_none()
+                || message.in_reply_to.as_ref()
+                    == previous.and_then(|previous| previous.message_id.as_ref());
+            let among_several = before.len() > 1 || present.len() > 1;
+            if answers_previous && among_several {
+                let joined: Vec<&String> = present.difference(before).collect();
+                let left: Vec<&String> = before.difference(&present).collect();
+                for (who, what) in [(joined, "joined"), (left, "left")] {
+                    if !who.is_empty() {
+                        ui.add_space(4.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                RichText::new(format!("{} {what}", names(who)))
+                                    .size(11.5)
+                                    .italics()
+                                    .color(palette.secondary),
+                            );
+                        });
+                    }
                 }
+            } else if mine && !present.is_empty() {
+                addressed = Some(format!("to {}", names(present.iter().collect())));
             }
         }
         people_before = Some(present);
@@ -243,7 +252,18 @@ pub fn show(
                 ui.label(RichText::new(name).size(11.5).color(palette.secondary));
             });
         }
-        ui.add_space(if same_sender { 2.0 } else { 6.0 });
+        if let Some(addressed) = addressed {
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(EDGE + PADDING.x);
+                    ui.label(RichText::new(addressed).size(11.5).color(palette.secondary));
+                });
+            });
+            ui.add_space(2.0);
+        } else {
+            ui.add_space(if same_sender { 2.0 } else { 6.0 });
+        }
         let (choice, shape) = bubble(
             ui,
             message,
