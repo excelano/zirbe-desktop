@@ -41,7 +41,11 @@ drawn from the synced mail and `contacts.rs` the desktop address book
 suggestions, photos for avatars from the card or a local file and never a URL,
 checked each minute and reread when a book's revision changes), `notify.rs` new-mail notifications
 and the launcher's unread count over the session bus, `signin.rs` the account form,
-`demo.rs` the sample conversations behind `--demo`, and `page.rs` the Email
+`audio.rs` the audio player in a bubble (rodio), `media.rs` which attachments
+are audio or video and a video's first frame through ffmpeg, `voice.rs`
+recording a voice message and preparing it to send, `transcribe.rs` running
+whisper-cli under the calling contract in excelano/whisper.cpp-model-small's
+README, `demo.rs` the sample conversations behind `--demo`, and `page.rs` the Email
 View: Blitz (`blitz-html`, pinned to an exact beta) lays out and paints a
 message's HTML on its own thread into tiles the reading pane draws, and its
 `NetProvider` is the only way the page reaches anything outside the message.
@@ -83,7 +87,9 @@ Messages are shown as text. HTML is rendered only in Web View, which the user
 opens per message, and Blitz runs no script. The page's `NetProvider` in
 `src/page.rs` answers images embedded in the message and nothing else, unless
 the user chose Show Images; then it fetches the message's `<img>` sources and
-nothing more, and keeps a response only if it is an image. Plain IMAP or SMTP without TLS is never offered. Server discovery is
+nothing more, and keeps a response only if it is an image. Plain IMAP or SMTP without TLS is never offered. ffmpeg (a
+recommended package) and whisper.cpp (a suggested one) run on files in Zirbe's
+private runtime folder, and Zirbe never downloads a speech model. Server discovery is
 the offline table in `store/src/presets.rs`, never a network lookup, because
 autoconfig and SRV lookups leak the address to a third party. Don't commit,
 push or publish unless David asks.

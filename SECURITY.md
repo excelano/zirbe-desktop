@@ -39,6 +39,16 @@ photos, and never writes to it; a photo is shown only when it is in the contact
 card or in a file on this computer, never fetched from a URL. It also posts
 new-mail notifications and the launcher's unread count there.
 
+The default microphone is opened only while the user records a voice message.
+Recording, encoding and transcription stay on the computer: Zirbe runs
+`ffmpeg` to encode a recording and to read received recordings and videos, and
+`whisper-cli` from whisper.cpp to transcribe them, both as separate programs
+reading files from Zirbe's private runtime folder, and neither reaches the
+network. Zirbe never downloads a speech model; transcription works only once
+the user has installed one. A received recording or video is untrusted input:
+ffmpeg parses it when Zirbe draws a video's first frame or transcribes it, and
+`symphonia` decodes audio inside Zirbe when it plays.
+
 ## What Zirbe stores
 
 Each account's password, in the system keyring (the Secret Service on Linux),
@@ -46,10 +56,13 @@ never on disk by Zirbe itself. The account's address, name, label, color and
 servers, in `~/.config/zirbe/accounts.json`, and the display and notification
 settings in `~/.config/zirbe/settings.json`. The account's folder list, its
 blocked senders, and the newest messages of its inbox, its Sent folder and each
-folder the user has opened, in `~/.cache/zirbe`, written readable by their
-owner only. An attachment the user opens is written to a private folder under
+folder the user has opened, with the transcripts of received voice and video
+messages, in `~/.cache/zirbe`, written readable by their owner only. An
+attachment the user opens is written to a private folder under
 `$XDG_RUNTIME_DIR/zirbe`, which Zirbe empties each time it starts and the
-system clears at logout.
+system clears at logout. A recording being encoded or transcribed, and a video
+whose first frame is being drawn, sit in the same folder until the work is
+done.
 
 ## Verifying releases
 

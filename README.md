@@ -28,8 +28,9 @@ arrows step through the list; Shift with an arrow, Shift-click and Ctrl-click
 pick several at once, and Ctrl+A or Select All in the ⋯ menu above the list
 picks every conversation shown, which the same menu can also mark read. Filter
 at the foot of the list narrows it to conversations that are unread or read,
-plain text or HTML, from people or from mailing lists, flagged, or carrying
-attachments. Archive makes an Archive folder if the account has none, Delete
+plain text or HTML, from people or from mailing lists, flagged, carrying
+attachments, or holding voice or video messages, and a conversation with a
+voice or video message shows a microphone or a camera before its preview. Archive makes an Archive folder if the account has none, Delete
 inside Trash removes for good after asking, and Empty Trash or Empty Junk at
 the top of those folders deletes everything in them after asking, keeping any
 mail that arrived since the last check. New mail in an inbox shows
@@ -41,17 +42,27 @@ people and messages, ignoring case and accents, and can then ask the server for
 older matches in the folder being shown, which Zirbe keeps once found; Find in
 Conversation (Ctrl+Shift+F) steps through the messages of one conversation that
 match. Right-clicking a message replies to that message alone, forwards it with
-its attachments, copies its text, or shows the quoted history Zirbe folds away.
+its attachments, or copies its text, and hovering over it shows the day and
+time it was sent.
 Above the reply box are the people a reply reaches, any of whom can be left out
 of it, and files can be attached with the paperclip or by dropping them on the
-window. A new conversation has Cc and Bcc, takes its name from its people when
+window. The microphone beside the paperclip records a voice message, which can
+be played back before it goes and is sent as Voice Message.m4a, or as a WAV
+file where ffmpeg is not installed. Where whisper.cpp is installed, Zirbe
+transcribes the recording on this computer and sends the transcript as the
+message's text, as the iPhone app does, so the words reach a recipient in any
+mail program; a voice or video message that arrives with no text is
+transcribed too, its transcript shown in the bubble and found by search.
+Settings says whether transcription is installed and what to install if not. A new conversation has Cc and Bcc, takes its name from its people when
 it has no subject, suggests addresses from the mail already synced and from the
-desktop's address book, and can be
-saved to the server's Drafts folder instead of sent; opening a draft from the
+desktop's address book, offers the same people as a searchable list under
+Contacts, and can be saved to the server's Drafts folder instead of sent; opening a draft from the
 Drafts folder brings it back to finish. A reply that fails to send keeps a
 Retry button, and a note between messages says when someone joins or leaves the
 conversation. Image attachments show as pictures under their message, fetched
-when the message comes into view. An invitation shows as a card with its time,
+when the message comes into view, and a picture you send shows at once. A
+video shows its first frame and opens in the default player when clicked, and
+an audio attachment plays in its bubble, with a bar to move through it. An invitation shows as a card with its time,
 place and organizer, a Join button for Teams, Meet, Zoom and Webex links, and
 Add to Calendar, which hands the invitation to the calendar application; answers
 to it read as a line such as "Ana accepted". The right-click menu also reacts
@@ -73,7 +84,8 @@ is read from the account's Sent folder and sits on the right, so a thread reads
 the same whichever program you answered it from. A reply goes to everyone in
 the conversation and carries the threading headers, so it stays in the thread
 for every other mail program too. The quoted history that most mailers append
-is folded away, leaving each bubble with what that message said.
+is folded away, leaving each bubble with what that message said, and a Show
+quoted text link under the bubble brings it back.
 
 It signs in to any IMAP and SMTP account with a password or an app-specific
 password, and knows the servers of the large providers from the address alone.
@@ -85,6 +97,14 @@ On Debian and Ubuntu, from the Excelano apt repository:
 
 ```
 curl -fsSL https://excelano.com/apt/setup.sh | sudo sh && sudo apt install zirbe
+```
+
+ffmpeg, which encodes voice messages and reads received recordings and videos,
+comes along as a recommended package. Transcription is optional and needs
+whisper.cpp and its speech model, close to 500 MB, from the same repository:
+
+```
+sudo apt install whisper.cpp-tools whisper.cpp-model-small
 ```
 
 ## Building
@@ -118,7 +138,9 @@ pictures too, which can tell the sender you opened the message and roughly
 where you are. Settings can open HTML email in Web View and load its pictures
 without being asked; both are off until you turn them on. Links open in your
 browser. Apart from those images, the only connections are to your own IMAP and
-SMTP servers. [SECURITY.md](SECURITY.md#what-zirbe-can-access) says what else
+SMTP servers. The microphone is open only while a voice message is recording,
+and transcription runs on this computer, so a recording and its transcript go
+nowhere but into the message. [SECURITY.md](SECURITY.md#what-zirbe-can-access) says what else
 Zirbe reads, and [What Zirbe stores](SECURITY.md#what-zirbe-stores) where it
 keeps your mail, settings and password.
 
