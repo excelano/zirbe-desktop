@@ -15,7 +15,23 @@ fn folder() -> PathBuf {
     dirs::runtime_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(crate::APP_ID)
-        .join("attachments")
+}
+
+pub fn private(kind: &str) -> Result<PathBuf, String> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let directory = folder()
+        .join(kind)
+        .join(format!("{}-{stamp}", std::process::id()));
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+        .create(&directory)
+        .map_err(|error| format!("{} could not be created: {error}", directory.display()))?;
+    Ok(directory)
 }
 
 pub fn clear() {
@@ -42,18 +58,7 @@ fn file_name(name: &str) -> String {
 }
 
 pub fn open(name: &str, bytes: &[u8]) -> Result<(), String> {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_nanos());
-    let directory = folder().join(format!("{}-{stamp}", std::process::id()));
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder
-        .create(&directory)
-        .map_err(|error| format!("{} could not be created: {error}", directory.display()))?;
-    let path = directory.join(file_name(name));
+    let path = private("attachments")?.join(file_name(name));
     fs::write(&path, bytes)
         .map_err(|error| format!("{} could not be written: {error}", path.display()))?;
     open::that_detached(&path).map_err(|error| error.to_string())

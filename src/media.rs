@@ -33,13 +33,14 @@ pub fn poster(name: &str, bytes: Vec<u8>) -> Reply<Vec<u8>> {
         .map_or("mp4", |(_, extension)| extension)
         .to_string();
     std::thread::spawn(move || {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_nanos());
-        let source = std::env::temp_dir().join(format!(
-            "zirbe-poster-{}-{stamp}.{extension}",
-            std::process::id()
-        ));
+        let work = match crate::files::private("work") {
+            Ok(work) => work,
+            Err(error) => {
+                let _ = sender.send(Err(error));
+                return;
+            }
+        };
+        let source = work.join(format!("video.{extension}"));
         let frame = std::fs::write(&source, &bytes)
             .map_err(|error| error.to_string())
             .and_then(|()| {
@@ -67,7 +68,7 @@ pub fn poster(name: &str, bytes: Vec<u8>) -> Reply<Vec<u8>> {
                     Err("no frame".into())
                 }
             });
-        let _ = std::fs::remove_file(&source);
+        let _ = std::fs::remove_dir_all(&work);
         let _ = sender.send(frame);
     });
     receiver

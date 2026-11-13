@@ -169,8 +169,7 @@ pub fn prepare(wav: Arc<Vec<u8>>, words: Vec<String>) -> Receiver<Result<Prepare
 }
 
 fn prepared(wav: &[u8], words: &[String]) -> Result<Prepared, String> {
-    let work = std::env::temp_dir().join(format!("zirbe-voice-{}", std::process::id()));
-    std::fs::create_dir_all(&work).map_err(|error| error.to_string())?;
+    let work = crate::files::private("work")?;
     let source = work.join("recording.wav");
     let encoded = work.join("recording.m4a");
     std::fs::write(&source, wav).map_err(|error| error.to_string())?;

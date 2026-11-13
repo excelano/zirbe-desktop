@@ -107,11 +107,7 @@ pub fn received(
 
 fn heard(name: &str, bytes: &[u8], words: &[String]) -> Result<String, String> {
     let setup = setup().ok_or("transcription is not installed")?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_nanos());
-    let work = std::env::temp_dir().join(format!("zirbe-heard-{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&work).map_err(|error| error.to_string())?;
+    let work = crate::files::private("work")?;
     let extension = name
         .rsplit_once('.')
         .map_or("bin", |(_, extension)| extension);
