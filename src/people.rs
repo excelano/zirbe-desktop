@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use eframe::egui::{self, Response, TextEdit, Ui};
+use eframe::egui::{self, Response, ScrollArea, TextEdit, Ui};
 use zirbe_store::{Account, Conversation, Person, Query};
 
 const SHOWN: usize = 6;
@@ -154,4 +154,98 @@ pub fn field(
         }
     }
     response
+}
+
+#[derive(Clone, Copy)]
+pub enum Line {
+    To,
+    Cc,
+    Bcc,
+}
+
+pub fn add(text: &mut String, person: &Person) {
+    let kept = text.trim_end().trim_end_matches([',', ';']).trim_end();
+    let separator = if kept.is_empty() { "" } else { ", " };
+    *text = format!("{kept}{separator}{}, ", written(person));
+}
+
+pub fn picker(ui: &mut Ui, known: &[Person]) -> Option<(Person, Line)> {
+    let mut picked = None;
+    ui.menu_button("Contacts…", |ui| {
+        let search_id = ui.make_persistent_id("contact search");
+        let mut search: String = ui
+            .ctx()
+            .data(|data| data.get_temp(search_id))
+            .unwrap_or_default();
+        ui.add(
+            TextEdit::singleline(&mut search)
+                .hint_text("Search")
+                .desired_width(280.0),
+        )
+        .request_focus();
+        let query = Query::new(search.trim());
+        ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            ui.set_min_width(280.0);
+            let matching = known.iter().filter(|person| {
+                query.is_empty()
+                    || query.matches_text(&format!(
+                        "{} {}",
+                        person.name.as_deref().unwrap_or_default(),
+                        person.address
+                    ))
+            });
+            for person in matching {
+                let label = match &person.name {
+                    Some(name) => format!("{name}  <{}>", person.address),
+                    None => person.address.clone(),
+                };
+                let row = ui
+                    .selectable_label(false, label)
+                    .on_hover_text("Click to add to To, right-click for Cc or Bcc");
+                if row.clicked() {
+                    picked = Some((person.clone(), Line::To));
+                }
+                row.context_menu(|ui| {
+                    if ui.button("Add to Cc").clicked() {
+                        picked = Some((person.clone(), Line::Cc));
+                    }
+                    if ui.button("Add to Bcc").clicked() {
+                        picked = Some((person.clone(), Line::Bcc));
+                    }
+                });
+            }
+        });
+        if picked.is_some() {
+            search.clear();
+            ui.close();
+        }
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(search_id, search));
+    });
+    picked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adding_a_person_keeps_one_separator() {
+        let ana = Person {
+            name: Some("Ana Lopez".into()),
+            address: "ana@example.org".into(),
+        };
+        let ben = Person {
+            name: None,
+            address: "ben@example.net".into(),
+        };
+        let mut text = String::new();
+        add(&mut text, &ana);
+        assert_eq!(text, "Ana Lopez <ana@example.org>, ");
+        add(&mut text, &ben);
+        assert_eq!(text, "Ana Lopez <ana@example.org>, ben@example.net, ");
+        let mut typed = "cy@example.com".to_string();
+        add(&mut typed, &ben);
+        assert_eq!(typed, "cy@example.com, ben@example.net, ");
+    }
 }

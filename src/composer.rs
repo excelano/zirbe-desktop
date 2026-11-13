@@ -244,12 +244,22 @@ impl Composer {
                                 ui,
                                 &mut self.to,
                                 "Names and addresses, separated by commas",
-                                field - 70.0,
+                                field - 160.0,
                                 "to",
                                 known,
                             );
                             if !self.copies && ui.small_button("Cc/Bcc").clicked() {
                                 self.copies = true;
+                            }
+                            if let Some((person, line)) = people::picker(ui, known) {
+                                match line {
+                                    people::Line::To => people::add(&mut self.to, &person),
+                                    people::Line::Cc => people::add(&mut self.cc, &person),
+                                    people::Line::Bcc => people::add(&mut self.bcc, &person),
+                                }
+                                if !matches!(line, people::Line::To) {
+                                    self.copies = true;
+                                }
                             }
                         });
                         ui.end_row();
