@@ -28,6 +28,8 @@ const CONTROLS: f32 = 20.0;
 const CONTROL_GAP: f32 = 12.0;
 pub const WEB_VIEW: &str = "🌐 Web View";
 pub const SHOW_IMAGES: &str = "👁 Show Images";
+const SHOW_QUOTED: &str = "Show quoted text";
+const HIDE_QUOTED: &str = "Hide quoted text";
 
 pub enum Choice {
     Web { images: bool },
@@ -637,6 +639,17 @@ fn bubble(
     } else {
         0.0
     };
+    let fold = (message.quoted && has_text).then_some(if full.is_some() {
+        HIDE_QUOTED
+    } else {
+        SHOW_QUOTED
+    });
+    let fold_height = if fold.is_some() {
+        CONTROLS + CHIP_GAP
+    } else {
+        0.0
+    };
+    let fold_width = fold.map_or(0.0, |label| label_width(ui, label, tone));
     let chips_width = message
         .attachments
         .iter()
@@ -649,8 +662,12 @@ fn bubble(
             CHIP_GAP
         };
     let size = vec2(
-        text.x.max(chips_width).max(controls_width).min(inner),
-        controls_height + text.y + chips_height,
+        text.x
+            .max(chips_width)
+            .max(controls_width)
+            .max(fold_width)
+            .min(inner),
+        controls_height + text.y + fold_height + chips_height,
     ) + 2.0 * PADDING;
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), size.y), Sense::hover());
     let left = if mine {
@@ -695,9 +712,9 @@ fn bubble(
     let mut chosen = None;
     let inside = shape.shrink2(PADDING);
     let mut top = inside.top();
+    let control =
+        |text: &str| egui::Button::new(RichText::new(text).size(13.0).color(tone)).frame(false);
     if message.html {
-        let control =
-            |text: &str| egui::Button::new(RichText::new(text).size(13.0).color(tone)).frame(false);
         let web_width = label_width(ui, WEB_VIEW, tone);
         let images_width = label_width(ui, SHOW_IMAGES, tone);
         let web = Rect::from_min_size(pos2(inside.left(), top), vec2(web_width, CONTROLS));
@@ -745,6 +762,13 @@ fn bubble(
         area = area.union(label);
         top += text.y + CHIP_GAP;
     }
+    if let Some(label) = fold {
+        let spot = Rect::from_min_size(pos2(inside.left(), top), vec2(fold_width, CONTROLS));
+        if ui.put(spot, control(label)).clicked() {
+            chosen = Some(Choice::Quoted);
+        }
+        top += CONTROLS + CHIP_GAP;
+    }
     area.context_menu(|ui| {
         if message.message_id.is_some() && message.uid != 0 {
             ui.horizontal(|ui| {
@@ -766,12 +790,14 @@ fn bubble(
         item(ui, "Reply to This Message", Choice::ReplyTo);
         item(ui, "Forward…", Choice::Forward);
         item(ui, "Copy Text", Choice::Copy);
-        let quoted = if full.is_some() {
-            "Hide Quoted Text"
-        } else {
-            "Show Quoted Text"
-        };
-        item(ui, quoted, Choice::Quoted);
+        if message.quoted {
+            let quoted = if full.is_some() {
+                "Hide Quoted Text"
+            } else {
+                "Show Quoted Text"
+            };
+            item(ui, quoted, Choice::Quoted);
+        }
     });
     for (index, name) in message.attachments.iter().enumerate() {
         let spot = Rect::from_min_size(pos2(inside.left(), top), vec2(inside.width(), CHIP));

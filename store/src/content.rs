@@ -145,27 +145,9 @@ fn from_html(html: &str) -> String {
 
 pub(crate) fn reply_part(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
-    let mut end = lines.len();
-    for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let next = lines.get(index + 1).map_or("", |next| next.trim());
-        if trimmed == "--"
-            || trimmed.starts_with("-----Original Message-----")
-            || trimmed.starts_with("________________________________")
-            || (trimmed.starts_with("On ") && trimmed.ends_with("wrote:"))
-            || (trimmed.starts_with("On ") && next.ends_with("wrote:") && !next.starts_with('>'))
-            || (trimmed.starts_with("Am ") && trimmed.ends_with("schrieb:"))
-            || (trimmed.starts_with("From:") && next.starts_with("Sent:"))
-            || (trimmed.starts_with('>')
-                && lines[index..].iter().all(|rest| {
-                    let rest = rest.trim();
-                    rest.is_empty() || rest.starts_with('>')
-                }))
-        {
-            end = index;
-            break;
-        }
-    }
+    let end = (0..lines.len())
+        .find(|&index| lines[index].trim() == "--" || starts_quote(&lines, index))
+        .unwrap_or(lines.len());
     let kept = lines[..end].join("\n");
     let kept = kept.trim();
     if kept.is_empty() {
@@ -175,9 +157,30 @@ pub(crate) fn reply_part(text: &str) -> String {
     }
 }
 
+pub(crate) fn folds_quote(text: &str) -> bool {
+    let lines: Vec<&str> = text.lines().collect();
+    reply_part(text) != text.trim() && (0..lines.len()).any(|index| starts_quote(&lines, index))
+}
+
+fn starts_quote(lines: &[&str], index: usize) -> bool {
+    let trimmed = lines[index].trim();
+    let next = lines.get(index + 1).map_or("", |next| next.trim());
+    trimmed.starts_with("-----Original Message-----")
+        || trimmed.starts_with("________________________________")
+        || (trimmed.starts_with("On ") && trimmed.ends_with("wrote:"))
+        || (trimmed.starts_with("On ") && next.ends_with("wrote:") && !next.starts_with('>'))
+        || (trimmed.starts_with("Am ") && trimmed.ends_with("schrieb:"))
+        || (trimmed.starts_with("From:") && next.starts_with("Sent:"))
+        || (trimmed.starts_with('>')
+            && lines[index..].iter().all(|rest| {
+                let rest = rest.trim();
+                rest.is_empty() || rest.starts_with('>')
+            }))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{attachment, attachment_names, reply_part};
+    use super::{attachment, attachment_names, folds_quote, reply_part};
 
     const WITH_FILES: &[u8] = b"From: a@example.com\r\nSubject: Files\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nTwo files.\r\n--x\r\nContent-Type: text/plain; name=notes.txt\r\nContent-Disposition: attachment; filename=notes.txt\r\n\r\nfirst\r\n--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=data.bin\r\nContent-Transfer-Encoding: base64\r\n\r\nAAEC\r\n--x--\r\n";
 
@@ -238,6 +241,17 @@ mod tests {
             "Done."
         );
         assert_eq!(reply_part("Done.\n-- \nAna Lopez\nExcelano"), "Done.");
+    }
+
+    #[test]
+    fn tells_a_folded_quote_from_a_cut_signature() {
+        assert!(folds_quote("Yes.\n\nOn Monday, Ana wrote:\n> Lunch?"));
+        assert!(folds_quote(
+            "Yes.\n-- \nDavid\n\nOn Monday, Ana wrote:\n> Lunch?"
+        ));
+        assert!(!folds_quote("Done.\n-- \nAna Lopez\nExcelano"));
+        assert!(!folds_quote("> only a quote"));
+        assert!(!folds_quote("> Lunch?\nYes, noon.\n> Where?\nThe usual."));
     }
 
     #[test]

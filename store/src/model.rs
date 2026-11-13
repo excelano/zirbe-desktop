@@ -166,6 +166,8 @@ pub struct Message {
     pub subject: String,
     pub date: DateTime<Utc>,
     pub text: String,
+    #[serde(default)]
+    pub quoted: bool,
     pub attachments: Vec<String>,
     pub seen: bool,
     pub partial: bool,

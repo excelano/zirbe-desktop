@@ -84,6 +84,7 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
                 subject: title.to_string(),
                 date: line.when,
                 text: line.text.to_string(),
+                quoted: !mine && index > 0,
                 attachments: line
                     .attachments
                     .iter()
@@ -390,6 +391,7 @@ impl MailSource for Demo {
             subject: draft.subject.clone(),
             date: Utc::now(),
             text: draft.body.clone(),
+            quoted: false,
             attachments: Vec::new(),
             seen: true,
             partial: false,

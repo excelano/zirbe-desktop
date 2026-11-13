@@ -75,6 +75,7 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
         cc: headers.cc().map(people).unwrap_or_default(),
         subject: headers.subject().unwrap_or_default().trim().to_string(),
         date,
+        quoted: content::folds_quote(&text),
         text: content::reply_part(&text),
         attachments,
         seen: fetched.seen,

@@ -161,6 +161,7 @@ mod tests {
             subject: "Hi".into(),
             date: Utc::now(),
             text: String::new(),
+            quoted: false,
             attachments: Vec::new(),
             seen: true,
             partial: false,

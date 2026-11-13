@@ -320,6 +320,7 @@ pub(crate) mod tests {
             },
             date: Utc.with_ymd_and_hms(2026, 11, 9, 12, minute, 0).unwrap(),
             text: String::new(),
+            quoted: false,
             attachments: Vec::new(),
             seen: false,
             partial: false,
