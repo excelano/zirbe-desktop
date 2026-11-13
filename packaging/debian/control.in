@@ -7,7 +7,8 @@ Section: mail
 Priority: optional
 Homepage: https://github.com/excelano/zirbe-desktop
 Depends: libc6, libgcc-s1, libwayland-client0, libxkbcommon0, libxkbcommon-x11-0, libegl1, libvulkan1 | libgl1, libx11-6, libx11-xcb1, libxi6, libxcursor1, libxrandr2, libfontconfig1, libfreetype6, libasound2t64, ca-certificates, desktop-file-utils, hicolor-icon-theme
-Recommends: gnome-keyring
+Recommends: gnome-keyring, ffmpeg
+Suggests: whisper.cpp-tools, whisper.cpp-model-small
 Description: Email that reads like a conversation
  Zirbe shows the mail in an IMAP account as conversations: a thread is one
  conversation, its subject is the name, the people on it are the members,

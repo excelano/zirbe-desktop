@@ -395,7 +395,11 @@ impl MailSource for Demo {
             date: Utc::now(),
             text: draft.body.clone(),
             quoted: false,
-            attachments: Vec::new(),
+            attachments: draft
+                .attachments
+                .iter()
+                .map(|file| file.name.clone())
+                .collect(),
             seen: true,
             partial: false,
             html: false,

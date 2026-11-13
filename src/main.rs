@@ -25,6 +25,8 @@ mod screenshot;
 mod settings;
 mod signin;
 mod system;
+mod transcribe;
+mod voice;
 
 use eframe::egui::{self, CornerRadius, Stroke, Visuals};
 use zirbe_store::Store;

@@ -16,7 +16,7 @@ use zirbe_store::{
     Query, Reply, Role, Scope, Status, Store,
 };
 
-use crate::audio::Audio;
+use crate::audio::{self, Audio};
 use crate::bubbles::{self, Action, Choice};
 use crate::composer::{self, Composer};
 use crate::contacts::Contacts;
@@ -32,6 +32,8 @@ use crate::people;
 use crate::settings::Settings;
 use crate::signin::{Outcome, SignIn};
 use crate::system::Clock;
+use crate::transcribe;
+use crate::voice;
 
 const SEARCH: &str = "conversation search";
 
@@ -60,6 +62,13 @@ struct Replying {
     removed: Vec<Person>,
     attachments: Vec<Outgoing>,
     picking: Option<std::sync::mpsc::Receiver<Vec<Outgoing>>>,
+    voice: Option<VoiceStep>,
+}
+
+enum VoiceStep {
+    Recording(voice::Recording),
+    Review(voice::Clip),
+    Preparing(std::sync::mpsc::Receiver<Result<voice::Prepared, String>>),
 }
 
 enum Purpose {
@@ -2146,6 +2155,124 @@ impl App {
         });
     }
 
+    fn voice_bar(&mut self, ui: &mut Ui, key: &str, conversation: &Conversation) -> bool {
+        let palette = self.palette;
+        let playback = format!("voice:{key}");
+        let Some(step) = self
+            .replying
+            .get_mut(key)
+            .and_then(|state| state.voice.take())
+        else {
+            return false;
+        };
+        let mut send = false;
+        let next = match step {
+            VoiceStep::Recording(recording) => match recording.finished() {
+                Some(Ok(clip)) => Some(VoiceStep::Review(clip)),
+                Some(Err(error)) => {
+                    self.failure = Some((key.to_string(), format!("Not recorded: {error}")));
+                    None
+                }
+                None => {
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                    let (mut stop, mut cancel) = (false, false);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("●").color(palette.failure));
+                        ui.label(audio::clock(recording.elapsed()));
+                        let (meter, _) =
+                            ui.allocate_exact_size(egui::vec2(140.0, 6.0), egui::Sense::hover());
+                        ui.painter().rect_filled(meter, 3.0, palette.field);
+                        let mut level = meter;
+                        level.max.x =
+                            meter.left() + meter.width() * (recording.level() * 3.0).min(1.0);
+                        ui.painter().rect_filled(level, 3.0, palette.accent);
+                        stop = ui.button("Stop").clicked();
+                        cancel = ui.button("Cancel").clicked();
+                    });
+                    if stop {
+                        recording.stop();
+                    }
+                    (!cancel).then_some(VoiceStep::Recording(recording))
+                }
+            },
+            VoiceStep::Review(clip) => {
+                let playing = self
+                    .audio
+                    .sound()
+                    .is_some_and(|sound| sound.key == playback && sound.playing);
+                let (mut play, mut post, mut discard) = (false, false, false);
+                ui.horizontal(|ui| {
+                    play = ui
+                        .button(if playing { "⏸" } else { "▶" })
+                        .on_hover_text("Listen before sending")
+                        .clicked();
+                    ui.label(format!("Voice message, {}", audio::clock(clip.length)));
+                    let button = egui::Button::new(RichText::new("Send").color(palette.on_accent))
+                        .fill(palette.accent)
+                        .corner_radius(14.0);
+                    post = ui.add(button).clicked();
+                    discard = ui.button("Discard").clicked();
+                });
+                if play && !self.audio.toggle(&playback) {
+                    let _ = self.audio.play(&playback, "voice.wav", clip.wav.clone());
+                }
+                if post || discard {
+                    self.audio.stop();
+                }
+                if post {
+                    let words = conversation
+                        .members
+                        .iter()
+                        .filter_map(|person| person.name.clone())
+                        .collect();
+                    Some(VoiceStep::Preparing(voice::prepare(
+                        clip.wav.clone(),
+                        words,
+                    )))
+                } else {
+                    (!discard).then_some(VoiceStep::Review(clip))
+                }
+            }
+            VoiceStep::Preparing(preparing) => match preparing.try_recv() {
+                Ok(Ok(prepared)) => {
+                    let draft = self.drafts.entry(key.to_string()).or_default();
+                    let typed = draft.trim().to_string();
+                    *draft = match (typed.is_empty(), prepared.transcript.is_empty()) {
+                        (true, _) => prepared.transcript,
+                        (false, true) => typed,
+                        (false, false) => format!("{typed}\n\n{}", prepared.transcript),
+                    };
+                    if let Some(state) = self.replying.get_mut(key) {
+                        state.attachments.push(prepared.file);
+                    }
+                    send = true;
+                    None
+                }
+                Ok(Err(error)) => {
+                    self.failure = Some((key.to_string(), format!("Not sent: {error}")));
+                    None
+                }
+                Err(TryRecvError::Empty) => {
+                    ui.ctx().request_repaint_after(Duration::from_millis(150));
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new("Preparing the voice message…")
+                                .size(12.0)
+                                .color(palette.secondary),
+                        );
+                    });
+                    Some(VoiceStep::Preparing(preparing))
+                }
+                Err(TryRecvError::Disconnected) => None,
+            },
+        };
+        if let Some(state) = self.replying.get_mut(key) {
+            state.voice = next;
+        }
+        send
+    }
+
     fn composer(&mut self, ui: &mut Ui, conversation: &Conversation, account: Option<&Account>) {
         let palette = self.palette;
         let key = conversation.key.clone();
@@ -2321,63 +2448,79 @@ impl App {
         if let Some(index) = drop_file {
             state.attachments.remove(index);
         }
-        let editor_id = egui::Id::unique(("composer", &key));
-        let focused = ui.ctx().memory(|memory| memory.has_focus(editor_id));
-        let enter = focused
-            && ui.input_mut(|input| {
-                let before = input.events.len();
-                input.events.retain(|event| {
-                    !matches!(
-                        event,
-                        egui::Event::Key { key: Key::Enter, pressed: true, modifiers, .. }
-                            if modifiers.is_none()
-                    )
-                });
-                input.events.len() != before
-            });
         let mut send = false;
+        let mut record = false;
         let mut pick = false;
-        ui.horizontal(|ui| {
-            let draft = self.drafts.entry(key.clone()).or_default();
-            let ready = !draft.trim().is_empty() && !sending && account.is_some();
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let button = egui::Button::new(RichText::new("Send").color(palette.on_accent))
-                    .fill(palette.accent)
-                    .corner_radius(14.0)
-                    .min_size(egui::vec2(64.0, 30.0));
-                if ui.add_enabled(ready, button).clicked() {
+        if self
+            .replying
+            .get(&key)
+            .is_some_and(|state| state.voice.is_some())
+        {
+            send = self.voice_bar(ui, &key, conversation);
+        } else {
+            let editor_id = egui::Id::unique(("composer", &key));
+            let focused = ui.ctx().memory(|memory| memory.has_focus(editor_id));
+            let enter = focused
+                && ui.input_mut(|input| {
+                    let before = input.events.len();
+                    input.events.retain(|event| {
+                        !matches!(
+                            event,
+                            egui::Event::Key { key: Key::Enter, pressed: true, modifiers, .. }
+                                if modifiers.is_none()
+                        )
+                    });
+                    input.events.len() != before
+                });
+            ui.horizontal(|ui| {
+                let draft = self.drafts.entry(key.clone()).or_default();
+                let ready = !draft.trim().is_empty() && !sending && account.is_some();
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let button = egui::Button::new(RichText::new("Send").color(palette.on_accent))
+                        .fill(palette.accent)
+                        .corner_radius(14.0)
+                        .min_size(egui::vec2(64.0, 30.0));
+                    if ui.add_enabled(ready, button).clicked() {
+                        send = true;
+                    }
+                    if sending {
+                        ui.spinner();
+                    }
+                    record = ui
+                        .add_enabled(!sending && account.is_some(), egui::Button::new("🎤"))
+                        .on_hover_text("Record a voice message")
+                        .clicked();
+                    pick = ui
+                        .button("📎")
+                        .on_hover_text("Attach files, or drop them on the window")
+                        .clicked();
+                    ui.add(
+                        TextEdit::multiline(draft)
+                            .id(editor_id)
+                            .hint_text("Message")
+                            .desired_rows(1)
+                            .desired_width(ui.available_width())
+                            .background_color(palette.field)
+                            .margin(Margin::symmetric(10, 7))
+                            .interactive(!sending),
+                    );
+                });
+                if enter && ready {
                     send = true;
                 }
-                if sending {
-                    ui.spinner();
-                }
-                pick = ui
-                    .button("📎")
-                    .on_hover_text("Attach files, or drop them on the window")
-                    .clicked();
-                ui.add(
-                    TextEdit::multiline(draft)
-                        .id(editor_id)
-                        .hint_text("Message")
-                        .desired_rows(1)
-                        .desired_width(ui.available_width())
-                        .background_color(palette.field)
-                        .margin(Margin::symmetric(10, 7))
-                        .interactive(!sending),
-                );
             });
-            if enter && ready {
-                send = true;
-            }
-        });
-        ui.label(
-            RichText::new("Enter sends, Shift+Enter starts a new line.")
-                .size(10.5)
-                .color(palette.secondary),
-        );
+            ui.label(
+                RichText::new("Enter sends, Shift+Enter starts a new line.")
+                    .size(10.5)
+                    .color(palette.secondary),
+            );
+        }
         let state = self.replying.entry(key.clone()).or_default();
         if pick && state.picking.is_none() {
             state.picking = Some(files::pick());
+        }
+        if record {
+            state.voice = Some(VoiceStep::Recording(voice::Recording::start()));
         }
         if send && let Some(account) = account {
             let body = self.drafts.get(&key).cloned().unwrap_or_default();
@@ -2479,6 +2622,28 @@ impl App {
                         .size(11.0)
                         .color(palette.secondary),
                 );
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(RichText::new("Voice messages").strong().color(palette.text));
+                if transcribe::setup().is_some() {
+                    ui.label(
+                        RichText::new("Voice messages are transcribed on this computer, and the transcript is sent as the message's text.")
+                            .size(11.0)
+                            .color(palette.secondary),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new("Voice messages are sent without a transcript. To transcribe them on this computer, install the speech recognizer and its model:")
+                            .size(11.0)
+                            .color(palette.secondary),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.code(transcribe::INSTALL);
+                        if ui.small_button("Copy").clicked() {
+                            ui.ctx().copy_text(transcribe::INSTALL.to_string());
+                        }
+                    });
+                }
                 ui.add_space(8.0);
                 ui.separator();
                 ui.label(RichText::new("Accounts").strong().color(palette.text));
