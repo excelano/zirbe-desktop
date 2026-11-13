@@ -93,7 +93,10 @@ fn snippet(conversation: &Conversation, account: &str) -> String {
         return String::new();
     };
     let text: String = last.text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let text = if text.is_empty() && !last.attachments.is_empty() {
+    let transcript = last.transcript.as_deref().unwrap_or_default().trim();
+    let text = if text.is_empty() && !transcript.is_empty() {
+        transcript.to_string()
+    } else if text.is_empty() && !last.attachments.is_empty() {
         format!("Attachment: {}", last.attachments.join(", "))
     } else {
         text

@@ -85,6 +85,7 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
                 date: line.when,
                 text: line.text.to_string(),
                 quoted: !mine && index > 0,
+                transcript: None,
                 attachments: line
                     .attachments
                     .iter()
@@ -395,6 +396,7 @@ impl MailSource for Demo {
             date: Utc::now(),
             text: draft.body.clone(),
             quoted: false,
+            transcript: None,
             attachments: draft
                 .attachments
                 .iter()
@@ -513,6 +515,17 @@ impl MailSource for Demo {
     }
 
     fn refresh(&self) {}
+
+    fn transcribed(&self, _account: &str, message: &Message, text: String) {
+        let mut guard = self.conversations.lock().expect("demo lock");
+        let mut conversations: Vec<Conversation> = guard.as_ref().clone();
+        for copy in conversations.iter_mut().flat_map(|c| c.messages.iter_mut()) {
+            if copy.message_id == message.message_id {
+                copy.transcript = Some(text.clone());
+            }
+        }
+        *guard = Arc::new(conversations);
+    }
 
     fn arrivals(&self) -> Vec<Arrival> {
         Vec::new()

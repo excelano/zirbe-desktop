@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver};
 
 pub const INSTALL: &str = "sudo apt install whisper.cpp-tools whisper.cpp-model-small";
 const MODEL: &str = "whisper.cpp/ggml-small.bin";
@@ -90,6 +91,49 @@ pub fn transcribe(setup: &Setup, audio: &Path, words: &[String]) -> Result<Strin
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     Ok(clean(&String::from_utf8_lossy(&output.stdout)))
+}
+
+pub fn received(
+    name: String,
+    bytes: Vec<u8>,
+    words: Vec<String>,
+) -> Receiver<Result<String, String>> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(heard(&name, &bytes, &words));
+    });
+    receiver
+}
+
+fn heard(name: &str, bytes: &[u8], words: &[String]) -> Result<String, String> {
+    let setup = setup().ok_or("transcription is not installed")?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let work = std::env::temp_dir().join(format!("zirbe-heard-{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|error| error.to_string())?;
+    let extension = name
+        .rsplit_once('.')
+        .map_or("bin", |(_, extension)| extension);
+    let source = work.join(format!("received.{extension}"));
+    let speech = work.join("speech.wav");
+    let result = std::fs::write(&source, bytes)
+        .map_err(|error| error.to_string())
+        .and_then(|()| {
+            let converted = Command::new("ffmpeg")
+                .args(["-loglevel", "error", "-y", "-i"])
+                .arg(&source)
+                .args(["-vn", "-ac", "1", "-ar", "16000"])
+                .arg(&speech)
+                .status()
+                .map_err(|error| format!("ffmpeg did not start: {error}"))?;
+            if !converted.success() {
+                return Err("ffmpeg could not read the recording".into());
+            }
+            transcribe(&setup, &speech, words)
+        });
+    let _ = std::fs::remove_dir_all(&work);
+    result
 }
 
 fn clean(output: &str) -> String {

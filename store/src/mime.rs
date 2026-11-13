@@ -76,6 +76,7 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
         subject: headers.subject().unwrap_or_default().trim().to_string(),
         date,
         quoted: content::folds_quote(&text),
+        transcript: None,
         text: content::reply_part(&text),
         attachments,
         seen: fetched.seen,

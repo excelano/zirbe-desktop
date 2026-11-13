@@ -72,6 +72,7 @@ pub trait MailSource {
     fn block(&self, account: &str, address: &str, on: bool);
     fn save_draft(&self, draft: Draft) -> Reply;
     fn refresh(&self);
+    fn transcribed(&self, account: &str, message: &Message, text: String);
     fn email(&self, account: &str, message: &Message) -> Reply<String>;
     fn attachment(&self, account: &str, message: &Message, index: usize) -> Reply<Vec<u8>>;
 }
@@ -144,6 +145,11 @@ struct Snapshot {
 
 enum Command {
     Refresh,
+    Transcribed {
+        account: String,
+        message_id: String,
+        text: String,
+    },
     UpdateAccount(Account),
     Block {
         account: String,
@@ -472,6 +478,16 @@ impl MailSource for Store {
         let _ = self.commands.send(Command::Refresh);
     }
 
+    fn transcribed(&self, account: &str, message: &Message, text: String) {
+        if let Some(message_id) = message.message_id.clone() {
+            let _ = self.commands.send(Command::Transcribed {
+                account: account.to_string(),
+                message_id,
+                text,
+            });
+        }
+    }
+
     fn email(&self, account: &str, message: &Message) -> Reply<String> {
         let (sender, receiver) = reply::channel();
         let _ = self.commands.send(Command::Email {
@@ -617,6 +633,17 @@ impl Worker {
     async fn handle(&mut self, command: Command) {
         match command {
             Command::Refresh => self.sync().await,
+            Command::Transcribed {
+                account,
+                message_id,
+                text,
+            } => {
+                if let Some(data) = self.data.get_mut(&account) {
+                    data.transcribed(&message_id, &text);
+                }
+                self.save_data(&account);
+                self.publish();
+            }
             Command::UpdateAccount(changed) => {
                 if let Some(known) = self
                     .accounts

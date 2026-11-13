@@ -72,6 +72,10 @@ fn searchable(message: &Message) -> String {
     }
     text.push(' ');
     text.push_str(&message.text);
+    if let Some(transcript) = &message.transcript {
+        text.push(' ');
+        text.push_str(transcript);
+    }
     for name in &message.attachments {
         text.push(' ');
         text.push_str(name);

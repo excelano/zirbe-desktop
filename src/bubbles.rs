@@ -89,6 +89,7 @@ pub struct View<'a> {
     pub scroll: bool,
     pub faces: &'a Faces,
     pub sound: Option<Sound<'a>>,
+    pub hearing: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -105,6 +106,7 @@ struct Style<'a> {
     faces: &'a Faces,
     sound: Option<&'a Sound<'a>>,
     clock: Clock,
+    hearing: Option<&'a str>,
 }
 
 fn reactions_of(
@@ -162,6 +164,7 @@ pub fn show(
         faces: view.faces,
         sound: view.sound.as_ref(),
         clock: view.clock,
+        hearing: view.hearing,
     };
     let reactions = reactions_of(conversation, view.pending, &me.address);
     let mut action = None;
@@ -316,7 +319,13 @@ fn people_of(message: &Message, me: &Account) -> BTreeSet<String> {
         .collect()
 }
 
-fn content(message: &Message, full: Option<&String>, color: Color32, wrap: f32) -> LayoutJob {
+fn content(
+    message: &Message,
+    full: Option<&String>,
+    hearing: bool,
+    color: Color32,
+    wrap: f32,
+) -> LayoutJob {
     let mut job = LayoutJob::default();
     let body = full.unwrap_or(&message.text).trim();
     let mut add = |text: &str, size: f32, color: Color32, italics: bool| {
@@ -338,8 +347,17 @@ fn content(message: &Message, full: Option<&String>, color: Color32, wrap: f32) 
             },
         );
     };
+    let transcript = message
+        .transcript
+        .as_deref()
+        .map(str::trim)
+        .filter(|transcript| !transcript.is_empty());
     if !body.is_empty() {
         add(body, 14.0, color, false);
+    } else if let Some(transcript) = transcript {
+        add(transcript, 14.0, color, true);
+    } else if hearing {
+        add("Transcribing…", 12.5, color.gamma_multiply(0.75), true);
     } else if message.attachments.is_empty() {
         add("No text", 14.0, color.gamma_multiply(0.7), true);
     }
@@ -718,7 +736,8 @@ fn bubble(
     };
     let inner = widest - 2.0 * PADDING.x;
     let full = style.expanded.get(&key_of(message));
-    let job = content(message, full, color, inner);
+    let hearing = style.hearing == Some(key_of(message).as_str());
+    let job = content(message, full, hearing, color, inner);
     let has_text = !job.text.is_empty();
     let galley = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()));
     let text = if has_text { galley.size() } else { Vec2::ZERO };

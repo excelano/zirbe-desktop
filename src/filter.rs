@@ -175,6 +175,7 @@ mod tests {
             date: Utc::now(),
             text: String::new(),
             quoted: false,
+            transcript: None,
             attachments: Vec::new(),
             seen: true,
             partial: false,

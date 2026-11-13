@@ -168,6 +168,8 @@ pub struct Message {
     pub text: String,
     #[serde(default)]
     pub quoted: bool,
+    #[serde(default)]
+    pub transcript: Option<String>,
     pub attachments: Vec<String>,
     pub seen: bool,
     pub partial: bool,

@@ -1,7 +1,7 @@
 // Author: David M. Anderson
 // Built with AI assistance (Claude, Anthropic)
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
@@ -25,6 +25,7 @@ use crate::demo::Demo;
 use crate::files;
 use crate::filter::Filter;
 use crate::list;
+use crate::media;
 use crate::notify::Notifier;
 use crate::page::Page;
 use crate::palette::{self, Palette};
@@ -63,6 +64,19 @@ struct Replying {
     attachments: Vec<Outgoing>,
     picking: Option<std::sync::mpsc::Receiver<Vec<Outgoing>>>,
     voice: Option<VoiceStep>,
+}
+
+struct Hearing {
+    account: String,
+    key: String,
+    message: Message,
+    words: Vec<String>,
+    stage: Heard,
+}
+
+enum Heard {
+    Fetching { name: String, reply: Reply<Vec<u8>> },
+    Transcribing(std::sync::mpsc::Receiver<Result<String, String>>),
 }
 
 enum VoiceStep {
@@ -284,6 +298,8 @@ pub struct App {
     thumb_loads: Vec<(String, Reply<Vec<u8>>)>,
     audio: Audio,
     audio_load: Option<AudioLoad>,
+    hearing: Option<Hearing>,
+    unheard: (String, HashSet<String>),
     reacting: Option<Reacting>,
     reaction_sends: Vec<(String, Reply)>,
     auto_opened: Option<String>,
@@ -339,6 +355,8 @@ impl App {
             thumb_loads: Vec::new(),
             audio: Audio::default(),
             audio_load: None,
+            hearing: None,
+            unheard: (String::new(), HashSet::new()),
             reacting: None,
             reaction_sends: Vec::new(),
             auto_opened: None,
@@ -500,6 +518,95 @@ impl App {
         }
         if self.audio.is_busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    fn listen(&mut self, conversation: &Conversation, me: &Account) {
+        if self.unheard.0 != conversation.key {
+            self.unheard = (conversation.key.clone(), HashSet::new());
+        }
+        if self.hearing.is_some() {
+            return;
+        }
+        let Some((message, index)) = conversation.messages.iter().find_map(|message| {
+            let waiting = message.text.trim().is_empty()
+                && message.transcript.is_none()
+                && message.message_id.is_some()
+                && !message
+                    .from
+                    .as_ref()
+                    .is_some_and(|from| me.owns(&from.address))
+                && !self.unheard.1.contains(&bubbles::key_of(message));
+            let index = message
+                .attachments
+                .iter()
+                .position(|name| media::is_audio(name) || media::is_video(name));
+            index.filter(|_| waiting).map(|index| (message, index))
+        }) else {
+            return;
+        };
+        let key = bubbles::key_of(message);
+        if transcribe::setup().is_none() {
+            self.unheard.1.insert(key);
+            return;
+        }
+        self.hearing = Some(Hearing {
+            account: conversation.account.clone(),
+            key,
+            message: message.clone(),
+            words: conversation
+                .members
+                .iter()
+                .filter_map(|person| person.name.clone())
+                .collect(),
+            stage: Heard::Fetching {
+                name: message.attachments[index].clone(),
+                reply: self
+                    .source
+                    .mail()
+                    .attachment(&conversation.account, message, index),
+            },
+        });
+    }
+
+    fn poll_hearing(&mut self, ctx: &egui::Context) {
+        let Some(mut hearing) = self.hearing.take() else {
+            return;
+        };
+        let heard = match hearing.stage {
+            Heard::Fetching { name, reply } => match arrived(&reply, ctx) {
+                None => {
+                    hearing.stage = Heard::Fetching { name, reply };
+                    self.hearing = Some(hearing);
+                    return;
+                }
+                Some(Ok(bytes)) => {
+                    let words = hearing.words.clone();
+                    hearing.stage = Heard::Transcribing(transcribe::received(name, bytes, words));
+                    self.hearing = Some(hearing);
+                    return;
+                }
+                Some(Err(error)) => Err(error),
+            },
+            Heard::Transcribing(receiver) => match receiver.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(250));
+                    hearing.stage = Heard::Transcribing(receiver);
+                    self.hearing = Some(hearing);
+                    return;
+                }
+                Err(TryRecvError::Disconnected) => Err("transcription stopped".into()),
+            },
+        };
+        match heard {
+            Ok(text) => self
+                .source
+                .mail()
+                .transcribed(&hearing.account, &hearing.message, text),
+            Err(_) => {
+                self.unheard.1.insert(hearing.key);
+            }
         }
     }
 
@@ -1895,11 +2002,16 @@ impl App {
                                     scroll,
                                     faces: self.contacts.faces(),
                                     sound: self.audio.sound(),
+                                    hearing: self
+                                        .hearing
+                                        .as_ref()
+                                        .map(|hearing| hearing.key.as_str()),
                                 },
                             )
                         })
                     })
                     .inner;
+                self.listen(&conversation, &me);
                 for (message, index) in wanted.into_inner() {
                     let key = bubbles::thumb_key(&message, index);
                     if !self.thumbs.contains_key(&key) {
@@ -2873,6 +2985,7 @@ impl eframe::App for App {
         self.poll_fetching(&ctx);
         self.poll_thumbs(&ctx);
         self.poll_audio(&ctx);
+        self.poll_hearing(&ctx);
         self.poll_reactions(&ctx);
         if !matches!(self.source, Source::Demo(_)) && self.contacts.poll(&ctx) {
             self.known = None;
