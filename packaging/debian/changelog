@@ -1,3 +1,18 @@
+zirbe (0.11.0) unstable; urgency=medium
+
+  * A video attachment shows its first frame under its message, and plays in the default player when clicked
+  * A voice or video message received without text is transcribed on this computer, shown in its bubble and found by search
+  * Record and send a voice message from the reply box, with a transcript when whisper.cpp is installed
+  * Pick recipients from a searchable list of contacts when starting a conversation
+  * Filter the list to conversations with voice or video, and mark their rows
+  * Hovering over a message shows the day and time it was sent
+  * A picture you send shows in its bubble at once, before the Sent folder has its copy
+  * Play a voice message or other audio attachment in its bubble
+  * A reply that folds away quoted text shows a Show quoted text link under it
+  * Show a picture sent between lines of text, the way phones send one, as an attachment
+
+ -- David M. Anderson <david.anderson@excelano.com>  Fri, 13 Nov 2026 08:55:00 -0600
+
 zirbe (0.10.0) unstable; urgency=medium
 
   * Open a private reply as its own conversation, and count an account's other addresses as yours
