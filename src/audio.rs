@@ -7,13 +7,6 @@ use std::time::Duration;
 
 use rodio::{Decoder, MixerDeviceSink, Player, Source};
 
-pub fn is_audio(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    [".m4a", ".mp3", ".aac", ".wav", ".ogg", ".oga", ".flac"]
-        .iter()
-        .any(|extension| lower.ends_with(extension))
-}
-
 pub struct Sound<'a> {
     pub key: &'a str,
     pub loading: bool,

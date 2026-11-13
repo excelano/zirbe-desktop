@@ -13,10 +13,11 @@ use eframe::egui::{
 };
 use zirbe_store::{Account, Conversation, Message, When};
 
-use crate::audio::{self, Sound, is_audio};
+use crate::audio::{self, Sound};
 use crate::contacts::Faces;
 use crate::dates;
 use crate::list;
+use crate::media::is_audio;
 use crate::palette::Palette;
 use crate::system::Clock;
 

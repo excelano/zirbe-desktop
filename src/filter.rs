@@ -4,6 +4,7 @@
 use eframe::egui::{Button, RichText, Ui};
 use zirbe_store::{Conversation, Message};
 
+use crate::media;
 use crate::palette::Palette;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -37,6 +38,8 @@ pub struct Filter {
     pub sender: Sender,
     pub flagged: bool,
     pub attachments: bool,
+    pub voice: bool,
+    pub video: bool,
 }
 
 impl Filter {
@@ -74,6 +77,8 @@ impl Filter {
             && sender
             && (!self.flagged || conversation.flagged)
             && (!self.attachments || any(|message| !message.attachments.is_empty()))
+            && (!self.voice || media::carries(conversation, media::is_audio))
+            && (!self.video || media::carries(conversation, media::is_video))
     }
 
     pub fn summary(&self) -> String {
@@ -98,6 +103,12 @@ impl Filter {
         }
         if self.attachments {
             parts.push("with attachments");
+        }
+        if self.voice {
+            parts.push("with voice messages");
+        }
+        if self.video {
+            parts.push("with video");
         }
         if parts.is_empty() {
             "Filter the list".into()
@@ -128,6 +139,8 @@ impl Filter {
         ui.separator();
         ui.checkbox(&mut self.flagged, "Flagged");
         ui.checkbox(&mut self.attachments, "Has attachments");
+        ui.checkbox(&mut self.voice, "Voice messages");
+        ui.checkbox(&mut self.video, "Video messages");
         ui.separator();
         if ui
             .add_enabled(self.active(), Button::new("Clear Filter"))
@@ -214,6 +227,26 @@ mod tests {
             vec![message("a@example.com", false, false)],
             0
         )));
+    }
+
+    #[test]
+    fn voice_and_video_look_at_the_attachments() {
+        let mut memo = message("a@example.com", false, false);
+        memo.attachments = vec!["Voice message.m4a".into()];
+        let mut clip = message("b@example.com", false, false);
+        clip.attachments = vec!["IMG_0042.MOV".into()];
+        let voice = Filter {
+            voice: true,
+            ..Filter::default()
+        };
+        let video = Filter {
+            video: true,
+            ..Filter::default()
+        };
+        assert!(voice.admits(&conversation(vec![memo.clone()], 0)));
+        assert!(!voice.admits(&conversation(vec![clip.clone()], 0)));
+        assert!(video.admits(&conversation(vec![clip], 0)));
+        assert!(!video.admits(&conversation(vec![memo], 0)));
     }
 
     #[test]

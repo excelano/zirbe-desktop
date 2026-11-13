@@ -7,6 +7,7 @@ use zirbe_store::{Conversation, Person};
 
 use crate::contacts::Faces;
 use crate::dates;
+use crate::media;
 use crate::palette::{self, Palette};
 use crate::system::Clock;
 
@@ -98,7 +99,12 @@ fn snippet(conversation: &Conversation, account: &str) -> String {
         text
     };
     let mine = last.from.as_ref().is_some_and(|from| from.is(account));
-    if mine { format!("You: {text}") } else { text }
+    let glyph = media::glyph(conversation);
+    if mine {
+        format!("{glyph}You: {text}")
+    } else {
+        format!("{glyph}{text}")
+    }
 }
 
 pub fn row(
