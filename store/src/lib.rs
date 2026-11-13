@@ -76,6 +76,22 @@ pub trait MailSource {
     fn attachment(&self, account: &str, message: &Message, index: usize) -> Reply<Vec<u8>>;
 }
 
+struct Located {
+    mailbox: String,
+    uid: u32,
+    message_id: Option<String>,
+}
+
+impl Located {
+    fn of(message: &Message) -> Located {
+        Located {
+            mailbox: message.mailbox.clone(),
+            uid: message.uid,
+            message_id: message.message_id.clone(),
+        }
+    }
+}
+
 pub struct Store {
     shared: Arc<Shared>,
     commands: mpsc::UnboundedSender<Command>,
@@ -141,8 +157,7 @@ enum Command {
     },
     Original {
         account: String,
-        mailbox: String,
-        uid: u32,
+        at: Located,
         reply: reply::Sender<Result<Original, String>>,
     },
     SaveDraft {
@@ -183,14 +198,12 @@ enum Command {
     },
     Email {
         account: String,
-        mailbox: String,
-        uid: u32,
+        at: Located,
         reply: reply::Sender<Result<String, String>>,
     },
     Attachment {
         account: String,
-        mailbox: String,
-        uid: u32,
+        at: Located,
         index: usize,
         name: String,
         reply: reply::Sender<Result<Vec<u8>, String>>,
@@ -366,8 +379,7 @@ impl MailSource for Store {
         let (sender, receiver) = reply::channel();
         let _ = self.commands.send(Command::Original {
             account: account.to_string(),
-            mailbox: message.mailbox.clone(),
-            uid: message.uid,
+            at: Located::of(message),
             reply: sender,
         });
         receiver
@@ -464,8 +476,7 @@ impl MailSource for Store {
         let (sender, receiver) = reply::channel();
         let _ = self.commands.send(Command::Email {
             account: account.to_string(),
-            mailbox: message.mailbox.clone(),
-            uid: message.uid,
+            at: Located::of(message),
             reply: sender,
         });
         receiver
@@ -475,8 +486,7 @@ impl MailSource for Store {
         let (sender, receiver) = reply::channel();
         let _ = self.commands.send(Command::Attachment {
             account: account.to_string(),
-            mailbox: message.mailbox.clone(),
-            uid: message.uid,
+            at: Located::of(message),
             index,
             name: message.attachments.get(index).cloned().unwrap_or_default(),
             reply: sender,
@@ -655,13 +665,8 @@ impl Worker {
                     self.sync_accounts(vec![known]).await;
                 }
             }
-            Command::Original {
-                account,
-                mailbox,
-                uid,
-                reply,
-            } => {
-                let original = match self.raw(&account, &mailbox, uid).await {
+            Command::Original { account, at, reply } => {
+                let original = match self.raw(&account, &at).await {
                     Ok(raw) => blocking(move || content::original(&raw))
                         .await
                         .ok_or_else(|| "the message could not be read".to_string()),
@@ -737,13 +742,8 @@ impl Worker {
                 keys,
                 highest,
             } => self.empty(&account, &mailbox, &keys, highest).await,
-            Command::Email {
-                account,
-                mailbox,
-                uid,
-                reply,
-            } => {
-                let document = match self.raw(&account, &mailbox, uid).await {
+            Command::Email { account, at, reply } => {
+                let document = match self.raw(&account, &at).await {
                     Ok(raw) => blocking(move || email::document(&raw))
                         .await
                         .ok_or_else(|| "the message could not be read".to_string()),
@@ -753,13 +753,12 @@ impl Worker {
             }
             Command::Attachment {
                 account,
-                mailbox,
-                uid,
+                at,
                 index,
                 name,
                 reply,
             } => {
-                let file = match self.raw(&account, &mailbox, uid).await {
+                let file = match self.raw(&account, &at).await {
                     Ok(raw) => blocking(move || content::attachment(&raw, index, &name))
                         .await
                         .ok_or_else(|| "the attachment is no longer in the message".to_string()),
@@ -1004,19 +1003,17 @@ impl Worker {
         });
         data.unsent.retain(|copy| !filed.contains(&copy.message_id));
         let mut unsaved = None;
-        if result.is_ok() && !data.unsent.is_empty() {
+        if result.is_ok() && data.unsent.iter().any(|copy| !copy.saved) {
             match data.sent_name().map(str::to_string) {
                 None => unsaved = Some("this account has no Sent folder".to_string()),
                 Some(sent) => {
-                    let mut kept = Vec::new();
-                    for copy in std::mem::take(&mut data.unsent) {
+                    for copy in data.unsent.iter_mut().filter(|copy| !copy.saved) {
                         let raw = STANDARD.decode(&copy.raw).unwrap_or_default();
-                        if let Err(error) = connection.append(&host, &sent, &raw).await {
-                            unsaved = Some(error);
-                            kept.push(copy);
+                        match connection.append(&host, &sent, &raw).await {
+                            Ok(()) => copy.saved = true,
+                            Err(error) => unsaved = Some(error),
                         }
                     }
-                    data.unsent = kept;
                 }
             }
         }
@@ -1075,6 +1072,7 @@ impl Worker {
             data.unsent.push(UnsentCopy {
                 message_id: id.clone(),
                 raw: STANDARD.encode(&raw),
+                saved: false,
             });
         }
         self.save_data(&account.key());
@@ -1095,8 +1093,12 @@ impl Worker {
         };
         match saved {
             Ok(()) => {
-                if let Some(data) = self.data.get_mut(&account.key()) {
-                    data.unsent.retain(|copy| copy.message_id != id);
+                if let Some(copy) = self
+                    .data
+                    .get_mut(&account.key())
+                    .and_then(|data| data.unsent.iter_mut().find(|copy| copy.message_id == id))
+                {
+                    copy.saved = true;
                 }
                 self.save_data(&account.key());
             }
@@ -1375,17 +1377,26 @@ impl Worker {
         Ok(total)
     }
 
-    async fn raw(&self, account: &str, mailbox: &str, uid: u32) -> Result<Vec<u8>, String> {
+    async fn raw(&self, account: &str, at: &Located) -> Result<Vec<u8>, String> {
         let known = self
             .account(account)
             .ok_or("that account is no longer signed in")?;
-        if mailbox.is_empty() || uid == 0 {
-            return Err("this message is not on the server yet".into());
+        if at.uid == 0 {
+            return self
+                .data
+                .get(&known.key())
+                .and_then(|data| {
+                    data.unsent
+                        .iter()
+                        .find(|copy| Some(&copy.message_id) == at.message_id.as_ref())
+                })
+                .and_then(|copy| STANDARD.decode(&copy.raw).ok())
+                .ok_or_else(|| "this message is not on the server yet".into());
         }
         let password = Self::password(account).await?;
         let host = known.imap_host.trim().to_string();
         let mut connection = Connection::open(&known, &password).await?;
-        let raw = connection.whole(&host, mailbox, uid).await;
+        let raw = connection.whole(&host, &at.mailbox, at.uid).await;
         connection.close().await;
         raw
     }

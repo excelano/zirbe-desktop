@@ -41,6 +41,8 @@ pub(crate) struct AccountData {
 pub(crate) struct UnsentCopy {
     pub message_id: String,
     pub raw: String,
+    #[serde(default)]
+    pub saved: bool,
 }
 
 impl AccountData {

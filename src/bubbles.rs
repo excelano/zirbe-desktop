@@ -651,7 +651,7 @@ fn extras(
         .enumerate()
         .filter(|(_, name)| is_image(name))
         .collect();
-    if images.is_empty() || message.uid == 0 {
+    if images.is_empty() || (message.uid == 0 && message.message_id.is_none()) {
         return chosen;
     }
     ui.add_space(4.0);
