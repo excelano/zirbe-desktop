@@ -1,5 +1,6 @@
 // Signs in with the address and password given, syncs, prints the
-// conversations, and signs out again, so nothing is left in the keyring.
+// conversations with any attachment names, and signs out again, so nothing is
+// left in the keyring.
 //
 //     ZIRBE_PASSWORD=... cargo run --example sync -p zirbe-store -- <address> [imap-host smtp-host]
 //
@@ -53,6 +54,14 @@ fn main() {
             conversation.title,
             conversation.unread
         );
+        for message in &conversation.messages {
+            if !message.attachments.is_empty() || message.partial {
+                println!(
+                    "       {:?} partial={}",
+                    message.attachments, message.partial
+                );
+            }
+        }
     }
     store.sign_out(&account);
     std::thread::sleep(Duration::from_secs(1));

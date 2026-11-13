@@ -1,7 +1,7 @@
 // Author: David M. Anderson
 // Built with AI assistance (Claude, Anthropic)
 
-use mail_parser::MessagePart;
+use mail_parser::{MessagePart, PartRole};
 
 use crate::model::{Invite, Original, Outgoing};
 
@@ -83,17 +83,25 @@ fn name_of(part: &MessagePart<'_>) -> String {
     part.attachment_name().unwrap_or("attachment").to_string()
 }
 
+fn files<'m>(message: &'m mail_parser::Message<'_>) -> Vec<MessagePart<'m>> {
+    let media = message
+        .text_body()
+        .chain(message.html_body())
+        .filter(|part| part.role() == PartRole::MediaBody);
+    let mut parts: Vec<MessagePart<'m>> =
+        message.attachments().chain(media).filter(listed).collect();
+    parts.sort_by_key(MessagePart::id);
+    parts.dedup_by_key(|part| part.id());
+    parts
+}
+
 pub(crate) fn attachment_names(message: &mail_parser::Message<'_>) -> Vec<String> {
-    message
-        .attachments()
-        .filter(listed)
-        .map(|part| name_of(&part))
-        .collect()
+    files(message).iter().map(name_of).collect()
 }
 
 pub(crate) fn attachment(raw: &[u8], index: usize, name: &str) -> Option<Vec<u8>> {
     let message = mail_parser::MessageParser::default().parse(raw)?;
-    let parts: Vec<MessagePart<'_>> = message.attachments().filter(listed).collect();
+    let parts = files(&message);
     let part = parts
         .get(index)
         .filter(|part| name_of(part) == name)
@@ -105,11 +113,10 @@ pub(crate) fn original(raw: &[u8]) -> Option<Original> {
     let message = mail_parser::MessageParser::default().parse(raw)?;
     Some(Original {
         text: text_of(&message),
-        attachments: message
-            .attachments()
-            .filter(listed)
+        attachments: files(&message)
+            .iter()
             .map(|part| Outgoing {
-                name: name_of(&part),
+                name: name_of(part),
                 bytes: part.decoded().into_owned(),
             })
             .collect(),
@@ -187,6 +194,16 @@ mod tests {
     fn reads_html_tables_and_rules_as_plain_lines() {
         let html = "<table><tr><td>Form</td><td>Due</td></tr></table><hr><p>Done.</p>";
         assert_eq!(super::from_html(html), "Form\nDue\n\nDone.");
+    }
+
+    #[test]
+    fn lists_a_picture_sent_between_text_parts() {
+        let raw = b"From: a@example.com\r\nSubject: Photo\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nHere it is\r\n--x\r\nContent-Type: image/jpeg\r\nContent-Disposition: inline; filename=IMG_0001.jpeg\r\nContent-Transfer-Encoding: base64\r\n\r\nAAEC\r\n--x\r\nContent-Type: image/png; name=drawing.png\r\nContent-Transfer-Encoding: base64\r\n\r\nAwQF\r\n--x\r\nContent-Type: text/plain\r\n\r\nSent from my iPhone\r\n--x--\r\n";
+        let message = mail_parser::MessageParser::default()
+            .parse(raw)
+            .expect("a message");
+        assert_eq!(attachment_names(&message), ["IMG_0001.jpeg", "drawing.png"]);
+        assert_eq!(attachment(raw, 1, "drawing.png"), Some(vec![3, 4, 5]));
     }
 
     #[test]

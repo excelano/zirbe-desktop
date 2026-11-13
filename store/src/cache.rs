@@ -20,7 +20,7 @@ pub(crate) struct Mailbox {
     pub found: BTreeSet<u32>,
 }
 
-const FORMAT: u32 = 3;
+const FORMAT: u32 = 4;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
