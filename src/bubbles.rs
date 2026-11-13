@@ -103,6 +103,7 @@ struct Style<'a> {
     expanded: &'a HashMap<String, String>,
     faces: &'a Faces,
     sound: Option<&'a Sound<'a>>,
+    clock: Clock,
 }
 
 fn reactions_of(
@@ -159,6 +160,7 @@ pub fn show(
         expanded: view.expanded,
         faces: view.faces,
         sound: view.sound.as_ref(),
+        clock: view.clock,
     };
     let reactions = reactions_of(conversation, view.pending, &me.address);
     let mut action = None;
@@ -868,6 +870,7 @@ fn bubble(
         }
         top += CONTROLS + CHIP_GAP;
     }
+    let area = area.on_hover_text(dates::stamp(message.date, style.clock));
     area.context_menu(|ui| {
         if message.message_id.is_some() && message.uid != 0 {
             ui.horizontal(|ui| {

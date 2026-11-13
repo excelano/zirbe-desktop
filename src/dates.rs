@@ -13,6 +13,11 @@ pub fn time(at: DateTime<Utc>, clock: Clock) -> String {
     }
 }
 
+pub fn stamp(at: DateTime<Utc>, clock: Clock) -> String {
+    let date = at.with_timezone(&Local).format("%A %-d %B %Y");
+    format!("{date}, {}", time(at, clock))
+}
+
 pub fn day(at: DateTime<Utc>, today: NaiveDate) -> String {
     let date = at.with_timezone(&Local).date_naive();
     let days = (today - date).num_days();
