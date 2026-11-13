@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
+use std::time::Duration;
 
 use chrono::{Local, NaiveDate};
 use eframe::egui::text::LayoutJob;
@@ -12,6 +13,7 @@ use eframe::egui::{
 };
 use zirbe_store::{Account, Conversation, Message, When};
 
+use crate::audio::{self, Sound, is_audio};
 use crate::contacts::Faces;
 use crate::dates;
 use crate::list;
@@ -35,6 +37,8 @@ pub enum Choice {
     Web { images: bool },
     Open(usize),
     Save(usize),
+    Play(usize),
+    Seek(usize, f32),
     ReplyTo,
     Forward,
     Copy,
@@ -46,6 +50,7 @@ pub enum Choice {
 
 pub const REACTIONS: [&str; 6] = ["👍", "👎", "❤", "😂", "‼", "❓"];
 const THUMB: f32 = 240.0;
+const PLAYER: f32 = 280.0;
 
 pub enum Thumb {
     Loading,
@@ -82,6 +87,7 @@ pub struct View<'a> {
     pub current: Option<usize>,
     pub scroll: bool,
     pub faces: &'a Faces,
+    pub sound: Option<Sound<'a>>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -96,6 +102,7 @@ struct Style<'a> {
     images_by_default: bool,
     expanded: &'a HashMap<String, String>,
     faces: &'a Faces,
+    sound: Option<&'a Sound<'a>>,
 }
 
 fn reactions_of(
@@ -151,6 +158,7 @@ pub fn show(
         images_by_default: view.images_by_default,
         expanded: view.expanded,
         faces: view.faces,
+        sound: view.sound.as_ref(),
     };
     let reactions = reactions_of(conversation, view.pending, &me.address);
     let mut action = None;
@@ -355,7 +363,11 @@ pub fn attachment_choice(chip: &egui::Response, index: usize) -> Option<Choice> 
     let chip = chip
         .clone()
         .on_hover_text("Click to open, right-click to save");
-    let mut chosen = chip.clicked().then_some(Choice::Open(index));
+    file_menu(&chip, index).or(chip.clicked().then_some(Choice::Open(index)))
+}
+
+fn file_menu(chip: &egui::Response, index: usize) -> Option<Choice> {
+    let mut chosen = None;
     chip.context_menu(|ui| {
         if ui.button("Open").clicked() {
             chosen = Some(Choice::Open(index));
@@ -364,6 +376,87 @@ pub fn attachment_choice(chip: &egui::Response, index: usize) -> Option<Choice> 
             chosen = Some(Choice::Save(index));
         }
     });
+    chosen
+}
+
+fn player(
+    ui: &mut Ui,
+    spot: Rect,
+    name: &str,
+    index: usize,
+    sound: Option<&Sound<'_>>,
+    color: Color32,
+) -> Option<Choice> {
+    ui.painter()
+        .rect_filled(spot, CornerRadius::same(10), color.gamma_multiply(0.12));
+    let row = ui
+        .interact(
+            spot,
+            ui.scope_id().with(("player", name, index)),
+            Sense::click(),
+        )
+        .on_hover_text(format!(
+            "{name}: click to play, right-click to open or save"
+        ));
+    let mut chosen = file_menu(&row, index).or(row.clicked().then_some(Choice::Play(index)));
+    let symbol = match sound {
+        Some(sound) if sound.loading => "…",
+        Some(sound) if sound.playing => "⏸",
+        _ => "▶",
+    };
+    let button = Rect::from_min_size(spot.min, vec2(CHIP + 4.0, CHIP));
+    let play = egui::Button::new(RichText::new(symbol).size(14.0).color(color)).frame(false);
+    if ui.put(button, play).clicked() {
+        chosen = Some(Choice::Play(index));
+    }
+    let position = sound.map_or(Duration::ZERO, |sound| sound.position);
+    let duration = sound.and_then(|sound| sound.duration);
+    let time = match duration {
+        Some(duration) => format!("{} / {}", audio::clock(position), audio::clock(duration)),
+        None if position > Duration::ZERO => audio::clock(position),
+        None => name.to_string(),
+    };
+    let time_width = label_width(ui, &time, color).min(spot.width() * 0.5);
+    let time_rect = Rect::from_min_max(
+        pos2(spot.right() - time_width - PADDING.x, spot.top()),
+        pos2(spot.right() - PADDING.x, spot.bottom()),
+    );
+    ui.put(
+        time_rect,
+        egui::Label::new(
+            RichText::new(time)
+                .size(12.0)
+                .color(color.gamma_multiply(0.85)),
+        )
+        .truncate()
+        .selectable(false),
+    );
+    let bar = Rect::from_min_max(
+        pos2(button.right() + 2.0, spot.center().y - 2.0),
+        pos2(time_rect.left() - PADDING.x, spot.center().y + 2.0),
+    );
+    if bar.width() > 8.0 {
+        let fraction = duration
+            .filter(|duration| !duration.is_zero())
+            .map_or(0.0, |duration| {
+                (position.as_secs_f32() / duration.as_secs_f32()).min(1.0)
+            });
+        let painter = ui.painter();
+        painter.rect_filled(bar, CornerRadius::same(2), color.gamma_multiply(0.3));
+        let mut done = bar;
+        done.max.x = bar.left() + bar.width() * fraction;
+        painter.rect_filled(done, CornerRadius::same(2), color);
+        let seek = ui.interact(
+            bar.expand2(vec2(0.0, 8.0)),
+            ui.scope_id().with(("seek", name, index)),
+            Sense::click(),
+        );
+        if seek.clicked()
+            && let Some(pointer) = seek.interact_pointer_pos()
+        {
+            chosen = Some(Choice::Seek(index, (pointer.x - bar.left()) / bar.width()));
+        }
+    }
     chosen
 }
 
@@ -653,7 +746,13 @@ fn bubble(
     let chips_width = message
         .attachments
         .iter()
-        .map(|name| label_width(ui, &format!("📎 {name}"), color) + 2.0 * PADDING.x)
+        .map(|name| {
+            if is_audio(name) {
+                PLAYER
+            } else {
+                label_width(ui, &format!("📎 {name}"), color) + 2.0 * PADDING.x
+            }
+        })
         .fold(0.0, f32::max);
     let chips_height = message.attachments.len() as f32 * (CHIP + CHIP_GAP)
         - if has_text || message.attachments.is_empty() {
@@ -801,9 +900,16 @@ fn bubble(
     });
     for (index, name) in message.attachments.iter().enumerate() {
         let spot = Rect::from_min_size(pos2(inside.left(), top), vec2(inside.width(), CHIP));
-        let chip = ui.put(spot, attachment_button(name, color));
-        if let Some(choice) = attachment_choice(&chip, index) {
-            chosen = Some(choice);
+        let choice = if is_audio(name) {
+            let key = thumb_key(message, index);
+            let sound = style.sound.filter(|sound| sound.key == key);
+            player(ui, spot, name, index, sound, color)
+        } else {
+            let chip = ui.put(spot, attachment_button(name, color));
+            attachment_choice(&chip, index)
+        };
+        if choice.is_some() {
+            chosen = choice;
         }
         top += CHIP + CHIP_GAP;
     }

@@ -230,11 +230,14 @@ impl Demo {
                         at(3, 20, 10),
                         "It does, and the Christmas market is a ten minute walk.",
                     ),
-                    line(
-                        mira.clone(),
-                        at(2, 7, 55),
-                        "Wonderful. I'll bring Lebkuchen.",
-                    ),
+                    Line {
+                        attachments: &["Voice message.wav"],
+                        ..line(
+                            mira.clone(),
+                            at(2, 7, 55),
+                            "Wonderful. I'll bring Lebkuchen.",
+                        )
+                    },
                 ],
             ),
             archived(conversation(
@@ -537,10 +540,13 @@ impl MailSource for Demo {
 
     fn attachment(&self, _account: &str, message: &Message, index: usize) -> Reply<Vec<u8>> {
         let name = message.attachments.get(index).cloned().unwrap_or_default();
-        let (reply, receiver) = mpsc::channel();
-        let _ = reply.send(Ok(
+        let bytes = if name.ends_with(".wav") {
+            chime()
+        } else {
             format!("A sample attachment named {name}.\n").into_bytes()
-        ));
+        };
+        let (reply, receiver) = mpsc::channel();
+        let _ = reply.send(Ok(bytes));
         receiver
     }
 
@@ -562,4 +568,34 @@ impl MailSource for Demo {
         let _ = reply.send(Ok(html));
         receiver
     }
+}
+
+fn chime() -> Vec<u8> {
+    const RATE: u32 = 16_000;
+    let samples: Vec<i16> = (0..RATE * 4)
+        .map(|n| {
+            let t = n as f32 / RATE as f32;
+            let pitch = if t % 1.0 < 0.5 { 523.25 } else { 659.25 };
+            let fade = 1.0 - (t % 0.5) * 2.0;
+            ((t * pitch * std::f32::consts::TAU).sin() * fade * 3000.0) as i16
+        })
+        .collect();
+    let data = (samples.len() * 2) as u32;
+    let mut wav = Vec::with_capacity(44 + data as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&RATE.to_le_bytes());
+    wav.extend_from_slice(&(RATE * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data.to_le_bytes());
+    for sample in samples {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    wav
 }

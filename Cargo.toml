@@ -39,6 +39,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # Blitz's fontique must open fontconfig at run time, as eframe's does.
 fontique = { version = "0.12", features = ["fontconfig-dlopen"] }
 url = "2"
+rodio = { version = "0.23", default-features = false, features = ["playback", "recording", "mp3", "mp4", "vorbis", "wav", "flac"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5"

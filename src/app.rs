@@ -16,6 +16,7 @@ use zirbe_store::{
     Query, Reply, Role, Scope, Status, Store,
 };
 
+use crate::audio::Audio;
 use crate::bubbles::{self, Action, Choice};
 use crate::composer::{self, Composer};
 use crate::contacts::Contacts;
@@ -226,6 +227,13 @@ pub(crate) fn arrived<T>(reply: &Reply<T>, ctx: &egui::Context) -> Option<Result
     }
 }
 
+struct AudioLoad {
+    conversation: String,
+    key: String,
+    name: String,
+    reply: Reply<Vec<u8>>,
+}
+
 pub struct App {
     source: Source,
     palette: Palette,
@@ -265,6 +273,8 @@ pub struct App {
     confirm_block: Option<(String, Person)>,
     thumbs: HashMap<String, bubbles::Thumb>,
     thumb_loads: Vec<(String, Reply<Vec<u8>>)>,
+    audio: Audio,
+    audio_load: Option<AudioLoad>,
     reacting: Option<Reacting>,
     reaction_sends: Vec<(String, Reply)>,
     auto_opened: Option<String>,
@@ -318,6 +328,8 @@ impl App {
             confirm_block: None,
             thumbs: HashMap::new(),
             thumb_loads: Vec::new(),
+            audio: Audio::default(),
+            audio_load: None,
             reacting: None,
             reaction_sends: Vec::new(),
             auto_opened: None,
@@ -446,6 +458,40 @@ impl App {
             }
         }
         self.thumb_loads = waiting;
+    }
+
+    fn poll_audio(&mut self, ctx: &egui::Context) {
+        if let Some(load) = self.audio_load.take() {
+            match arrived(&load.reply, ctx) {
+                None => self.audio_load = Some(load),
+                Some(Ok(bytes)) => {
+                    let bytes = Arc::new(bytes);
+                    if self
+                        .audio
+                        .play(&load.key, &load.name, bytes.clone())
+                        .is_err()
+                    {
+                        self.audio.stop();
+                        if let Err(error) = files::open(&load.name, &bytes) {
+                            self.failure = Some((
+                                load.conversation,
+                                format!("{} did not open: {error}", load.name),
+                            ));
+                        }
+                    }
+                }
+                Some(Err(error)) => {
+                    self.audio.stop();
+                    self.failure = Some((
+                        load.conversation,
+                        format!("{} did not play: {error}", load.name),
+                    ));
+                }
+            }
+        }
+        if self.audio.is_busy() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
     }
 
     fn flush_reaction(&mut self) {
@@ -1839,6 +1885,7 @@ impl App {
                                     current,
                                     scroll,
                                     faces: self.contacts.faces(),
+                                    sound: self.audio.sound(),
                                 },
                             )
                         })
@@ -2065,6 +2112,24 @@ impl App {
             | Choice::Forward
             | Choice::Copy
             | Choice::Quoted => return,
+            Choice::Play(index) => {
+                let key = bubbles::thumb_key(message, index);
+                if !self.audio.toggle(&key) {
+                    self.audio.loading(&key);
+                    self.audio_load = Some(AudioLoad {
+                        conversation: conversation.to_string(),
+                        key,
+                        name: name(index),
+                        reply: mail.attachment(account, message, index),
+                    });
+                }
+                return;
+            }
+            Choice::Seek(index, fraction) => {
+                self.audio
+                    .seek(&bubbles::thumb_key(message, index), fraction);
+                return;
+            }
             Choice::Open(index) => Work::Open {
                 name: name(index),
                 reply: mail.attachment(account, message, index),
@@ -2642,6 +2707,7 @@ impl eframe::App for App {
         self.poll_sending(&ctx);
         self.poll_fetching(&ctx);
         self.poll_thumbs(&ctx);
+        self.poll_audio(&ctx);
         self.poll_reactions(&ctx);
         if !matches!(self.source, Source::Demo(_)) && self.contacts.poll(&ctx) {
             self.known = None;
