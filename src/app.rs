@@ -295,7 +295,7 @@ pub struct App {
     reauth: HashMap<String, (String, Option<Reply>, Option<String>)>,
     confirm_block: Option<(String, Person)>,
     thumbs: HashMap<String, bubbles::Thumb>,
-    thumb_loads: Vec<(String, Reply<Vec<u8>>)>,
+    thumb_loads: Vec<(String, Option<String>, Reply<Vec<u8>>)>,
     audio: Audio,
     audio_load: Option<AudioLoad>,
     hearing: Option<Hearing>,
@@ -461,9 +461,12 @@ impl App {
 
     fn poll_thumbs(&mut self, ctx: &egui::Context) {
         let mut waiting = Vec::new();
-        for (key, reply) in std::mem::take(&mut self.thumb_loads) {
+        for (key, video, reply) in std::mem::take(&mut self.thumb_loads) {
             match arrived(&reply, ctx) {
-                None => waiting.push((key, reply)),
+                None => waiting.push((key, video, reply)),
+                Some(Ok(bytes)) if let Some(name) = &video => {
+                    waiting.push((key, None, media::poster(name, bytes)));
+                }
                 Some(result) => {
                     let thumb = result
                         .ok()
@@ -2016,8 +2019,14 @@ impl App {
                     let key = bubbles::thumb_key(&message, index);
                     if !self.thumbs.contains_key(&key) {
                         self.thumbs.insert(key.clone(), bubbles::Thumb::Loading);
+                        let video = message
+                            .attachments
+                            .get(index)
+                            .filter(|name| media::is_video(name))
+                            .cloned();
                         self.thumb_loads.push((
                             key,
+                            video,
                             self.source
                                 .mail()
                                 .attachment(&conversation.account, &message, index),

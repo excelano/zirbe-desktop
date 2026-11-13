@@ -8,8 +8,8 @@ use std::time::Duration;
 use chrono::{Local, NaiveDate};
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{
-    self, Align, Color32, CornerRadius, FontId, Layout, Rect, RichText, Sense, TextFormat, Ui,
-    UiBuilder, Vec2, pos2, vec2,
+    self, Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, RichText, Sense, TextFormat,
+    Ui, UiBuilder, Vec2, pos2, vec2,
 };
 use zirbe_store::{Account, Conversation, Message, When};
 
@@ -17,7 +17,7 @@ use crate::audio::{self, Sound};
 use crate::contacts::Faces;
 use crate::dates;
 use crate::list;
-use crate::media::is_audio;
+use crate::media::{is_audio, is_video};
 use crate::palette::Palette;
 use crate::system::Clock;
 
@@ -670,7 +670,7 @@ fn extras(
         .attachments
         .iter()
         .enumerate()
-        .filter(|(_, name)| is_image(name))
+        .filter(|(_, name)| is_image(name) || is_video(name))
         .collect();
     if images.is_empty() || (message.uid == 0 && message.message_id.is_none()) {
         return chosen;
@@ -692,6 +692,18 @@ fn extras(
                         let response = ui
                             .add(image)
                             .on_hover_text(format!("{name}: click to open, right-click to save"));
+                        if is_video(name) {
+                            let center = response.rect.center();
+                            let painter = ui.painter();
+                            painter.circle_filled(center, 22.0, Color32::from_black_alpha(150));
+                            painter.text(
+                                center + vec2(2.0, 0.0),
+                                Align2::CENTER_CENTER,
+                                "▶",
+                                FontId::proportional(20.0),
+                                Color32::WHITE,
+                            );
+                        }
                         if let Some(choice) = attachment_choice(&response, *index) {
                             chosen = Some(choice);
                         }
