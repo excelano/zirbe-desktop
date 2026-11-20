@@ -58,6 +58,7 @@ pub trait MailSource {
     fn accounts(&self) -> Vec<Account>;
     fn conversations(&self) -> Arc<Vec<Conversation>>;
     fn folders(&self, account: &str) -> Vec<FolderInfo>;
+    fn loaded(&self, scope: &Scope) -> bool;
     fn open(&self, scope: &Scope);
     fn send(&self, draft: Draft) -> Reply;
     fn mark_read(&self, conversation: &Conversation);
@@ -139,6 +140,7 @@ struct Snapshot {
     accounts: Vec<Account>,
     conversations: Arc<Vec<Conversation>>,
     folders: HashMap<String, Vec<FolderInfo>>,
+    fetched: HashMap<String, BTreeSet<String>>,
     locked: BTreeSet<String>,
     blocked: HashMap<String, Vec<String>>,
 }
@@ -324,6 +326,20 @@ impl MailSource for Store {
             .get(account)
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn loaded(&self, scope: &Scope) -> bool {
+        match scope {
+            Scope::AllInboxes => true,
+            Scope::Mailbox { account, name } => self
+                .shared
+                .published
+                .read()
+                .expect("published lock")
+                .fetched
+                .get(account)
+                .is_some_and(|names| names.contains(name)),
+        }
     }
 
     fn open(&self, scope: &Scope) {
@@ -720,10 +736,18 @@ impl Worker {
             }
             Command::Open(scope) => {
                 self.open = scope;
-                if let Scope::Mailbox { account, .. } = &self.open
+                if let Scope::Mailbox { account, name } = &self.open
                     && let Some(known) = self.account(account)
                 {
-                    self.sync_accounts(vec![known]).await;
+                    let name = name.clone();
+                    self.set_status(Status::Syncing);
+                    let result = self.sync_folder(&known, &name).await;
+                    self.save_data(&known.key());
+                    self.publish();
+                    self.set_status(match result {
+                        Ok(()) => Status::Synced(Utc::now()),
+                        Err(error) => Status::Failed(format!("{}: {error}", known.address)),
+                    });
                 }
             }
             Command::SignIn {
@@ -826,6 +850,11 @@ impl Worker {
             .iter()
             .map(|(account, data)| (account.clone(), data.folders.clone()))
             .collect();
+        let fetched = self
+            .data
+            .iter()
+            .map(|(account, data)| (account.clone(), data.fetched()))
+            .collect();
         let blocked = self
             .data
             .iter()
@@ -836,6 +865,7 @@ impl Worker {
             accounts: self.accounts.clone(),
             conversations: self.shared.present(conversations),
             folders,
+            fetched,
             locked: self.locked.clone(),
             blocked,
         };
@@ -994,24 +1024,8 @@ impl Worker {
             if let Some(sent) = data.sent.as_mut() {
                 connection.sync(&host, sent).await?;
             }
-            if let Some(name) = open {
-                if data.mailbox_mut(&name).is_none()
-                    && data
-                        .folders
-                        .iter()
-                        .any(|folder| folder.name == name && folder.selectable)
-                {
-                    data.others.insert(
-                        name.clone(),
-                        Mailbox {
-                            name: name.clone(),
-                            ..Mailbox::default()
-                        },
-                    );
-                }
-                if let Some(mailbox) = data.others.get_mut(&name) {
-                    connection.sync(&host, mailbox).await?;
-                }
+            if let Some(mailbox) = open.and_then(|name| data.other_mut(&name)) {
+                connection.sync(&host, mailbox).await?;
             }
             Ok(())
         }
@@ -1052,6 +1066,20 @@ impl Worker {
             )),
             None => Ok(()),
         })
+    }
+
+    async fn sync_folder(&mut self, account: &Account, name: &str) -> Result<(), String> {
+        let password = Self::password(&account.key()).await?;
+        let host = account.imap_host.trim().to_string();
+        let mut connection = Connection::open(account, &password).await?;
+        let mut data = self.data.remove(&account.key()).unwrap_or_default();
+        let result = match data.other_mut(name) {
+            Some(mailbox) => connection.sync(&host, mailbox).await.map(|_| ()),
+            None => Ok(()),
+        };
+        self.data.insert(account.key(), data);
+        connection.close().await;
+        result
     }
 
     async fn send(&mut self, draft: Draft, reply: reply::Sender<Result<(), String>>) {

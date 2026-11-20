@@ -56,6 +56,35 @@ impl AccountData {
         self.mailboxes_mut().find(|mailbox| mailbox.name == name)
     }
 
+    pub fn other_mut(&mut self, name: &str) -> Option<&mut Mailbox> {
+        if !self.others.contains_key(name)
+            && self.inbox.name != name
+            && self.sent_name() != Some(name)
+            && self
+                .folders
+                .iter()
+                .any(|folder| folder.name == name && folder.selectable)
+        {
+            self.others.insert(
+                name.to_string(),
+                Mailbox {
+                    name: name.to_string(),
+                    ..Mailbox::default()
+                },
+            );
+        }
+        self.others.get_mut(name)
+    }
+
+    pub fn fetched(&self) -> BTreeSet<String> {
+        std::iter::once(&self.inbox)
+            .chain(self.sent.as_ref())
+            .chain(self.others.values())
+            .filter(|mailbox| mailbox.uid_validity != 0)
+            .map(|mailbox| mailbox.name.clone())
+            .collect()
+    }
+
     pub fn transcribed(&mut self, message_id: &str, text: &str) {
         let filed = std::iter::once(&mut self.inbox)
             .chain(self.sent.as_mut())
@@ -150,7 +179,7 @@ fn write<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AccountData, load_data};
+    use super::{AccountData, FolderInfo, Mailbox, load_data};
 
     #[test]
     fn a_transcript_reaches_every_copy_of_its_message() {
@@ -188,5 +217,41 @@ mod tests {
         assert!(sent.messages.is_empty());
         assert_eq!(data.unfiled[0].mailbox, "INBOX.Sent");
         assert_eq!(data.format, super::FORMAT);
+    }
+
+    #[test]
+    fn opens_a_listed_folder_and_counts_it_fetched_once_selected() {
+        let folder = |name: &str, selectable: bool| FolderInfo {
+            name: name.into(),
+            label: name.into(),
+            depth: 0,
+            role: None,
+            selectable,
+            unread: 0,
+        };
+        let mut data = AccountData {
+            inbox: Mailbox {
+                name: "INBOX".into(),
+                uid_validity: 7,
+                ..Mailbox::default()
+            },
+            folders: vec![
+                folder("INBOX", true),
+                folder("INBOX.spam", true),
+                folder("Shared", false),
+            ],
+            ..AccountData::default()
+        };
+        assert!(data.other_mut("INBOX").is_none());
+        assert!(data.other_mut("Shared").is_none());
+        assert!(data.other_mut("Unlisted").is_none());
+        assert!(!data.fetched().contains("INBOX.spam"));
+        data.other_mut("INBOX.spam")
+            .expect("the spam folder")
+            .uid_validity = 3;
+        assert_eq!(
+            data.fetched().into_iter().collect::<Vec<_>>(),
+            ["INBOX", "INBOX.spam"]
+        );
     }
 }

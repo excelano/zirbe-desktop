@@ -827,13 +827,15 @@ impl App {
                     ui.add_space(24.0);
                     ui.vertical_centered(|ui| {
                         let text = if self.matches.is_some() {
-                            "No matches here"
+                            "No matches here".into()
+                        } else if !self.source.mail().loaded(&self.scope) {
+                            format!("Loading {}…", self.scope_label())
                         } else if self.filter.only_unread() {
-                            "You're all caught up"
+                            "You're all caught up".into()
                         } else if self.filter.active() {
-                            "Nothing here matches the filter"
+                            "Nothing here matches the filter".into()
                         } else {
-                            "No conversations here"
+                            "No conversations here".into()
                         };
                         ui.label(RichText::new(text).size(13.0).color(palette.secondary));
                     });

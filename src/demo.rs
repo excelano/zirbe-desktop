@@ -318,6 +318,10 @@ impl MailSource for Demo {
         vec![self.account.lock().expect("demo lock").clone()]
     }
 
+    fn loaded(&self, _scope: &Scope) -> bool {
+        true
+    }
+
     fn locked(&self, _account: &str) -> bool {
         false
     }
