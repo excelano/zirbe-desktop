@@ -37,7 +37,7 @@ pub(crate) fn conversations(
             branches(me, started, thread, &copies)
         })
         .collect();
-    found.sort_by_key(|conversation| std::cmp::Reverse(conversation.latest()));
+    found.sort_by(|a, b| b.latest().cmp(&a.latest()).then_with(|| a.key.cmp(&b.key)));
     found
 }
 
@@ -331,6 +331,21 @@ pub(crate) mod tests {
             reaction: None,
             invite: None,
         }
+    }
+
+    #[test]
+    fn orders_conversations_sent_at_the_same_minute_by_their_key() {
+        let messages = (0..40)
+            .rev()
+            .map(|n| message(&format!("{n:02}"), &[], "ana@example.org", 5))
+            .collect();
+        let keys: Vec<String> = conversations(&account(), &BTreeSet::new(), messages)
+            .into_iter()
+            .map(|conversation| conversation.key)
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted);
     }
 
     #[test]
