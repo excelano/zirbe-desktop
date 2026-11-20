@@ -1,3 +1,12 @@
+zirbe (0.12.0) unstable; urgency=medium
+
+  * Text selected in a message shows clearly, in your own messages too
+  * Conversations sent at the same moment keep their order in the list
+  * Move through the conversation list with Home, End, Page Up and Page Down
+  * Opening a folder fetches only that folder, and the list says it is loading until it arrives
+
+ -- David M. Anderson <david.anderson@excelano.com>  Fri, 20 Nov 2026 00:09:09 -0600
+
 zirbe (0.11.0) unstable; urgency=medium
 
   * A video attachment shows its first frame under its message, and plays in the default player when clicked
