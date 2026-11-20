@@ -855,7 +855,7 @@ impl App {
                     shown.len(),
                     |ui, range| {
                         let row = list::height(self.settings.preview) + ui.spacing().item_spacing.y;
-                        self.page = ((ui.clip_rect().height() / row) as usize).max(1);
+                        self.page = list::page(ui.clip_rect().height(), row);
                         if std::mem::take(&mut self.reveal)
                             && let Some(at) = self
                                 .selected
@@ -1217,24 +1217,15 @@ impl App {
     }
 
     fn step(&mut self, by: isize, modifiers: Modifiers) {
-        let Some(last) = self.shown.len().checked_sub(1) else {
-            return;
-        };
         let at = self
             .selected
             .as_ref()
             .and_then(|key| self.shown.iter().position(|k| k == key));
-        let next = match at {
-            Some(at) => at.saturating_add_signed(by).min(last),
-            None if by > 0 => (by.unsigned_abs() - 1).min(last),
-            None => 0,
-        };
-        if at == Some(next) {
-            return;
+        if let Some(next) = list::step(at, by, self.shown.len()) {
+            let key = self.shown[next].clone();
+            self.pick(&key, modifiers);
+            self.reveal = true;
         }
-        let key = self.shown[next].clone();
-        self.pick(&key, modifiers);
-        self.reveal = true;
     }
 
     fn emptiable(&self) -> Option<Emptying> {
@@ -1398,15 +1389,7 @@ impl App {
             self.select_all();
             return;
         }
-        let page = self.page as isize;
-        for (key, by) in [
-            (Key::ArrowDown, 1),
-            (Key::ArrowUp, -1),
-            (Key::PageDown, page),
-            (Key::PageUp, -page),
-            (Key::End, isize::MAX),
-            (Key::Home, isize::MIN),
-        ] {
+        for (key, by) in list::moves(self.page) {
             for modifiers in [Modifiers::SHIFT, Modifiers::NONE] {
                 if pressed(modifiers, key) {
                     self.step(by, modifiers);

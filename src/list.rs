@@ -2,7 +2,7 @@
 // Built with AI assistance (Claude, Anthropic)
 
 use chrono::NaiveDate;
-use eframe::egui::{self, Align2, FontId, Rect, Response, Sense, Ui, pos2, vec2};
+use eframe::egui::{self, Align2, FontId, Key, Rect, Response, Sense, Ui, pos2, vec2};
 use zirbe_store::{Conversation, Person};
 
 use crate::contacts::Faces;
@@ -13,6 +13,32 @@ use crate::system::Clock;
 
 pub fn height(lines: u8) -> f32 {
     54.0 + 18.0 * f32::from(lines)
+}
+
+pub fn page(visible: f32, row: f32) -> usize {
+    ((visible / row) as usize).max(1)
+}
+
+pub fn moves(page: usize) -> [(Key, isize); 6] {
+    let page = page as isize;
+    [
+        (Key::ArrowDown, 1),
+        (Key::ArrowUp, -1),
+        (Key::PageDown, page),
+        (Key::PageUp, -page),
+        (Key::End, isize::MAX),
+        (Key::Home, isize::MIN),
+    ]
+}
+
+pub fn step(at: Option<usize>, by: isize, rows: usize) -> Option<usize> {
+    let last = rows.checked_sub(1)?;
+    let next = match at {
+        Some(at) => at.saturating_add_signed(by).min(last),
+        None if by > 0 => (by.unsigned_abs() - 1).min(last),
+        None => 0,
+    };
+    (at != Some(next)).then_some(next)
 }
 
 pub struct Look<'a> {
@@ -239,4 +265,70 @@ pub fn row(
             .galley(pos2(left, rect.top() + 48.0), galley, color);
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Key, moves, page, step};
+
+    fn by(key: Key, rows_on_screen: usize) -> isize {
+        moves(rows_on_screen)
+            .into_iter()
+            .find(|(candidate, _)| *candidate == key)
+            .map(|(_, by)| by)
+            .expect("a move for the key")
+    }
+
+    #[test]
+    fn a_page_is_the_rows_that_fit_whole_and_never_less_than_one() {
+        assert_eq!(page(380.0, 93.0), 4);
+        assert_eq!(page(372.0, 93.0), 4);
+        assert_eq!(page(371.9, 93.0), 3);
+        assert_eq!(page(40.0, 93.0), 1);
+    }
+
+    #[test]
+    fn arrows_move_one_row_and_stop_at_either_end() {
+        assert_eq!(step(Some(3), by(Key::ArrowDown, 4), 10), Some(4));
+        assert_eq!(step(Some(3), by(Key::ArrowUp, 4), 10), Some(2));
+        assert_eq!(step(Some(9), by(Key::ArrowDown, 4), 10), None);
+        assert_eq!(step(Some(0), by(Key::ArrowUp, 4), 10), None);
+    }
+
+    #[test]
+    fn page_keys_move_a_screenful_and_stop_at_the_ends() {
+        assert_eq!(step(Some(0), by(Key::PageDown, 4), 30), Some(4));
+        assert_eq!(step(Some(8), by(Key::PageUp, 4), 30), Some(4));
+        assert_eq!(step(Some(27), by(Key::PageDown, 4), 30), Some(29));
+        assert_eq!(step(Some(2), by(Key::PageUp, 4), 30), Some(0));
+        assert_eq!(step(Some(29), by(Key::PageDown, 4), 30), None);
+        assert_eq!(step(Some(0), by(Key::PageUp, 4), 30), None);
+    }
+
+    #[test]
+    fn home_and_end_go_to_the_first_and_last_row() {
+        assert_eq!(step(Some(12), by(Key::End, 4), 30), Some(29));
+        assert_eq!(step(Some(12), by(Key::Home, 4), 30), Some(0));
+        assert_eq!(step(Some(29), by(Key::End, 4), 30), None);
+        assert_eq!(step(Some(0), by(Key::Home, 4), 30), None);
+    }
+
+    #[test]
+    fn with_nothing_selected_a_move_starts_from_the_top() {
+        assert_eq!(step(None, by(Key::ArrowDown, 4), 30), Some(0));
+        assert_eq!(step(None, by(Key::ArrowUp, 4), 30), Some(0));
+        assert_eq!(step(None, by(Key::PageDown, 4), 30), Some(3));
+        assert_eq!(step(None, by(Key::PageUp, 4), 30), Some(0));
+        assert_eq!(step(None, by(Key::Home, 4), 30), Some(0));
+        assert_eq!(step(None, by(Key::End, 4), 30), Some(29));
+        assert_eq!(step(None, by(Key::PageDown, 4), 2), Some(1));
+    }
+
+    #[test]
+    fn an_empty_list_or_a_lone_selected_row_goes_nowhere() {
+        for (_, by) in moves(4) {
+            assert_eq!(step(None, by, 0), None);
+            assert_eq!(step(Some(0), by, 1), None);
+        }
+    }
 }
