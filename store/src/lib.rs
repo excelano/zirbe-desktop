@@ -19,6 +19,8 @@ mod secrets;
 mod server;
 mod smtp;
 mod subject;
+#[cfg(test)]
+mod tests;
 mod thread;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -217,6 +219,8 @@ enum Command {
         name: String,
         reply: reply::Sender<Result<Vec<u8>, String>>,
     },
+    #[cfg(test)]
+    Settle(reply::Sender<()>),
 }
 
 impl Store {
@@ -828,6 +832,10 @@ impl<S: Server> Worker<S> {
                     Err(error) => Err(error),
                 };
                 let _ = reply.send(file);
+            }
+            #[cfg(test)]
+            Command::Settle(reply) => {
+                let _ = reply.send(());
             }
         }
     }

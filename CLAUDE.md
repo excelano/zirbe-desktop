@@ -23,7 +23,14 @@ The store crate, `store/` (`zirbe-store`), is the mail engine behind
 `thread.rs` (grouping by the threading headers, splitting off private replies
 with the message they answer as context outside the conversation's copies,
 keeping every copy of a message filed in several folders), `compose.rs` (reply
-recipients and the outgoing message), `secrets.rs` (keyring-core) and `cache.rs`. Its worker thread
+recipients and the outgoing message), `secrets.rs` (keyring-core), `cache.rs`, and
+`server.rs`, the `Server` and `Session` traits every IMAP, SMTP and keyring
+call of the worker goes through, with `Live` as the real implementation. Its
+tests in `store/src/tests/` drive a `Store` through `MailSource` the way the
+window does: `worker.rs` against `fake.rs`, an in-memory server that logs each
+command it receives and can be told to fail one, and `live.rs`, ignored by
+default, against a real test account, seeding and removing its own tagged
+messages. Its worker thread
 runs tokio, syncs on a timer, and publishes snapshots the window reads without
 waiting. Every sync lists each account's folders and fetches INBOX and Sent;
 another folder is fetched only while it is the one open, and stays cached
@@ -64,6 +71,7 @@ platform's SDK headers; check those arms on the Mac and on winwork.
 ## Commands
 
     cargo test --workspace
+    ZIRBE_TEST_ADDRESS=... ZIRBE_TEST_HOST=... ZIRBE_TEST_PASSWORD=... cargo test -p zirbe-store -- --ignored
     cargo run -- --demo
     ZIRBE_PASSWORD=... cargo run --example sync -p zirbe-store -- <address>
     ./packaging/debian/build-deb.sh

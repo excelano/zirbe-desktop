@@ -1,0 +1,346 @@
+// Author: David M. Anderson
+// Built with AI assistance (Claude, Anthropic)
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use super::harness::Harness;
+use crate::cache::Mailbox;
+use crate::imap::Connection;
+use crate::server::{Server, Session};
+use crate::{Account, Change, Draft, INBOX, MailSource, Person, Role, Scope, smtp};
+
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+#[derive(Clone, Default)]
+struct Scratch {
+    passwords: Arc<Mutex<BTreeMap<String, String>>>,
+}
+
+impl Scratch {
+    fn passwords(&self) -> MutexGuard<'_, BTreeMap<String, String>> {
+        self.passwords.lock().expect("password lock")
+    }
+}
+
+impl Server for Scratch {
+    type Session = Connection;
+
+    async fn open_keyring(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn password(&self, account: &str) -> Result<String, String> {
+        self.passwords()
+            .get(account)
+            .cloned()
+            .ok_or_else(|| format!("no password is saved for {account}"))
+    }
+
+    async fn save_password(&self, account: &str, password: &str) -> Result<(), String> {
+        self.passwords()
+            .insert(account.to_string(), password.to_string());
+        Ok(())
+    }
+
+    async fn forget_password(&self, account: &str) -> Result<(), String> {
+        self.passwords().remove(account);
+        Ok(())
+    }
+
+    async fn connect(&self, account: &Account, password: &str) -> Result<Connection, String> {
+        Connection::open(account, password).await
+    }
+
+    async fn check_smtp(&self, account: &Account, password: &str) -> Result<(), String> {
+        smtp::check(account, password).await
+    }
+
+    async fn send(
+        &self,
+        account: &Account,
+        password: &str,
+        message: lettre::Message,
+    ) -> Result<(), String> {
+        smtp::send(account, password, message).await
+    }
+}
+
+fn setting(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| {
+        panic!(
+            "the live tests need ZIRBE_TEST_ADDRESS, ZIRBE_TEST_HOST and ZIRBE_TEST_PASSWORD for a test account; {name} is not set"
+        )
+    })
+}
+
+struct Found {
+    uid: u32,
+    seen: bool,
+}
+
+struct Live {
+    harness: Harness<Scratch>,
+    password: String,
+    tag: String,
+    _turn: MutexGuard<'static, ()>,
+}
+
+impl Live {
+    fn new() -> Live {
+        let turn = ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let address = setting("ZIRBE_TEST_ADDRESS");
+        let host = setting("ZIRBE_TEST_HOST");
+        let preset = crate::for_address(&address).expect("an email address");
+        let account = Account {
+            address,
+            imap_host: host.clone(),
+            imap_port: preset.imap_port,
+            smtp_host: host,
+            smtp_port: preset.smtp_port,
+            ..Account::default()
+        };
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_nanos();
+        let live = Live {
+            harness: Harness::new(Scratch::default(), account),
+            password: setting("ZIRBE_TEST_PASSWORD"),
+            tag: format!("zirbe-live-{nanos}"),
+            _turn: turn,
+        };
+        live.harness
+            .sign_in(&live.password)
+            .expect("the test account to sign in");
+        live
+    }
+
+    fn on_server<T>(&self, work: impl AsyncFnOnce(&mut Connection, &str) -> T) -> T {
+        let account = self.harness.account.clone();
+        let host = account.imap_host.clone();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(async {
+                let mut connection = Connection::open(&account, &self.password)
+                    .await
+                    .expect("a connection to the test account");
+                let result = work(&mut connection, &host).await;
+                connection.close().await;
+                result
+            })
+    }
+
+    fn role(&self, role: Role) -> String {
+        self.harness
+            .store
+            .folders(&self.harness.key())
+            .into_iter()
+            .find(|folder| folder.role == Some(role))
+            .map(|folder| folder.name)
+            .unwrap_or_else(|| panic!("the test account has no {role:?} folder"))
+    }
+
+    fn mail(&self, label: &str, minute: u32) -> String {
+        format!(
+            "From: Live Test <tester@example.org>\r\nTo: {}\r\nSubject: {} {label}\r\n\
+             Date: Mon, 16 Nov 2026 10:{minute:02}:00 +0000\r\n\
+             Message-ID: <{}-{label}@example.org>\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\nA live test message.\r\n",
+            self.harness.account.address, self.tag, self.tag
+        )
+    }
+
+    fn seed(&self, folder: &str, labels: &[&str]) {
+        let mails: Vec<String> = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| self.mail(label, index as u32))
+            .collect();
+        self.on_server(async |connection, host| {
+            for mail in &mails {
+                connection
+                    .append_with(host, folder, mail.as_bytes(), "()")
+                    .await
+                    .expect("a seeded message");
+            }
+        });
+    }
+
+    fn found(&self, folder: &str) -> Vec<Found> {
+        let tag = self.tag.clone();
+        self.on_server(async |connection, host| {
+            let mut mailbox = Mailbox {
+                name: folder.to_string(),
+                ..Mailbox::default()
+            };
+            connection
+                .sync(host, &mut mailbox)
+                .await
+                .expect("the folder read");
+            mailbox
+                .messages
+                .into_iter()
+                .filter(|(_, message)| message.subject.contains(&tag))
+                .map(|(uid, message)| Found {
+                    uid,
+                    seen: message.seen,
+                })
+                .collect()
+        })
+    }
+
+    fn tagged(&self, scope: &Scope) -> Vec<String> {
+        self.harness
+            .titles(scope)
+            .into_iter()
+            .filter(|title| title.contains(&self.tag))
+            .collect()
+    }
+
+    fn eventually(&self, what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !done() {
+            assert!(Instant::now() < deadline, "gave up waiting for {what}");
+            std::thread::sleep(Duration::from_secs(3));
+            self.harness.store.refresh();
+            self.harness.settle();
+        }
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        let folders: Vec<String> = self
+            .harness
+            .store
+            .folders(&self.harness.key())
+            .into_iter()
+            .filter(|folder| folder.selectable)
+            .map(|folder| folder.name)
+            .collect();
+        for folder in folders {
+            let uids: Vec<u32> = self.found(&folder).iter().map(|found| found.uid).collect();
+            if !uids.is_empty() {
+                self.on_server(async |connection, host| {
+                    let _ = connection.delete(host, &folder, &uids).await;
+                });
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs the live test account"]
+fn live_opening_junk_fetches_and_shows_its_mail() {
+    let live = Live::new();
+    let junk = live.role(Role::Junk);
+    live.seed(&junk, &["one", "two", "three"]);
+    let scope = live.harness.folder(&junk);
+    live.harness.store.open(&scope);
+    live.harness.settle();
+    assert!(live.harness.store.loaded(&scope));
+    assert_eq!(live.tagged(&scope).len(), 3);
+}
+
+#[test]
+#[ignore = "needs the live test account"]
+fn live_trashing_moves_the_message_on_the_server() {
+    let live = Live::new();
+    live.seed(INBOX, &["trash-me"]);
+    live.harness.store.refresh();
+    live.harness.settle();
+    let conversation = live
+        .harness
+        .held(&Scope::AllInboxes)
+        .into_iter()
+        .find(|c| c.title.contains(&live.tag))
+        .expect("the seeded conversation");
+    live.harness
+        .store
+        .change(&[conversation], &Scope::AllInboxes, Change::Trash);
+    live.harness.settle();
+    assert!(live.found(INBOX).is_empty());
+    assert_eq!(live.found(&live.role(Role::Trash)).len(), 1);
+    assert!(live.tagged(&Scope::AllInboxes).is_empty());
+}
+
+#[test]
+#[ignore = "needs the live test account"]
+fn live_reading_marks_the_message_seen_on_the_server() {
+    let live = Live::new();
+    live.seed(INBOX, &["read-me"]);
+    live.harness.store.refresh();
+    live.harness.settle();
+    assert!(live.found(INBOX).iter().all(|found| !found.seen));
+    let conversation = live
+        .harness
+        .held(&Scope::AllInboxes)
+        .into_iter()
+        .find(|c| c.title.contains(&live.tag))
+        .expect("the seeded conversation");
+    live.harness.store.mark_read(&conversation);
+    live.harness.settle();
+    let found = live.found(INBOX);
+    assert_eq!(found.len(), 1);
+    assert!(found[0].seen);
+}
+
+#[test]
+#[ignore = "needs the live test account"]
+fn live_a_message_sent_to_yourself_lands_in_sent_and_the_inbox() {
+    let live = Live::new();
+    let draft = Draft {
+        account: live.harness.key(),
+        to: vec![Person {
+            name: None,
+            address: live.harness.account.address.clone(),
+        }],
+        subject: format!("{} sent", live.tag),
+        body: "A live test message sent to itself.".into(),
+        ..Draft::default()
+    };
+    live.harness
+        .store
+        .send(draft)
+        .recv_timeout(super::harness::WAIT)
+        .expect("a send reply")
+        .expect("a sent message");
+    live.harness.settle();
+    assert_eq!(live.found(&live.role(Role::Sent)).len(), 1);
+    live.eventually("the message to reach the inbox", || {
+        !live.found(INBOX).is_empty()
+    });
+    live.harness.store.refresh();
+    live.harness.settle();
+    assert_eq!(live.tagged(&Scope::AllInboxes).len(), 1);
+}
+
+#[test]
+#[ignore = "needs the live test account"]
+fn live_a_saved_draft_lands_in_drafts() {
+    let live = Live::new();
+    let draft = Draft {
+        account: live.harness.key(),
+        to: vec![Person {
+            name: None,
+            address: live.harness.account.address.clone(),
+        }],
+        subject: format!("{} draft", live.tag),
+        body: "A live test draft.".into(),
+        ..Draft::default()
+    };
+    live.harness
+        .store
+        .save_draft(draft)
+        .recv_timeout(super::harness::WAIT)
+        .expect("a reply")
+        .expect("a saved draft");
+    live.harness.settle();
+    assert_eq!(live.found(&live.role(Role::Drafts)).len(), 1);
+}
