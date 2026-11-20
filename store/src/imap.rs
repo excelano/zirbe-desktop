@@ -5,10 +5,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_imap::Client;
 use async_imap::extensions::idle::IdleResponse;
 use async_imap::imap_proto::{MessageSection, SectionPath};
 use async_imap::types::{Fetch, Flag, NameAttribute};
-use async_imap::{Client, Session};
 use chrono::Utc;
 use futures::TryStreamExt;
 use tokio::net::TcpStream;
@@ -21,6 +21,7 @@ use crate::cache::Mailbox;
 use crate::folders::{self, Listed};
 use crate::mime::{self, Body, Fetched};
 use crate::model::{Account, FolderInfo, Role};
+use crate::server::Session;
 
 const WINDOW: u32 = 300;
 const WHOLE_UP_TO: u32 = 2 * 1024 * 1024;
@@ -29,7 +30,7 @@ const SEARCH_LIMIT: usize = 50;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct Connection {
-    session: Session<TlsStream<TcpStream>>,
+    session: async_imap::Session<TlsStream<TcpStream>>,
 }
 
 pub(crate) fn tls() -> Result<Arc<ClientConfig>, String> {
@@ -117,11 +118,111 @@ impl Connection {
         Ok(Connection { session })
     }
 
-    pub async fn close(mut self) {
+    async fn fetch_into(
+        &mut self,
+        host: &str,
+        mailbox: &mut Mailbox,
+        uids: &[u32],
+        query: &str,
+    ) -> Result<(), String> {
+        let set = uids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let fetched: Vec<Fetch> = self
+            .session
+            .uid_fetch(set, query)
+            .await
+            .map_err(failed(host))?
+            .try_collect()
+            .await
+            .map_err(failed(host))?;
+        let mime_path = SectionPath::Part(vec![1], Some(MessageSection::Mime));
+        let part_path = SectionPath::Part(vec![1], None);
+        let name = mailbox.name.clone();
+        for fetch in &fetched {
+            let Some(uid) = fetch.uid else { continue };
+            let arrived = fetch.internal_date().map(|date| date.with_timezone(&Utc));
+            let parsed = match fetch.body() {
+                Some(raw) => mime::parse(&Fetched {
+                    mailbox: &name,
+                    uid,
+                    seen: seen(fetch),
+                    header: raw,
+                    body: Body::Whole,
+                    arrived,
+                }),
+                None => fetch.header().and_then(|header| {
+                    mime::parse(&Fetched {
+                        mailbox: &name,
+                        uid,
+                        seen: seen(fetch),
+                        header,
+                        body: Body::FirstPart {
+                            mime: fetch.section(&mime_path),
+                            data: fetch.section(&part_path).unwrap_or_default(),
+                            attachments: fetch
+                                .bodystructure()
+                                .map(mime::attachment_names)
+                                .unwrap_or_default(),
+                            html: fetch.bodystructure().is_some_and(mime::has_html),
+                        },
+                        arrived,
+                    })
+                }),
+            };
+            if let Some(mut message) = parsed {
+                message.flagged = flagged(fetch);
+                mailbox.messages.insert(uid, message);
+            }
+        }
+        Ok(())
+    }
+
+    async fn store(&mut self, host: &str, set: &str, query: &str) -> Result<(), String> {
+        let _: Vec<Fetch> = self
+            .session
+            .uid_store(set, query)
+            .await
+            .map_err(failed(host))?
+            .try_collect()
+            .await
+            .map_err(failed(host))?;
+        Ok(())
+    }
+
+    async fn expunge(&mut self, host: &str, set: &str) -> Result<(), String> {
+        let capabilities = self.session.capabilities().await.map_err(failed(host))?;
+        if capabilities.has_str("UIDPLUS") {
+            let _: Vec<_> = self
+                .session
+                .uid_expunge(set)
+                .await
+                .map_err(failed(host))?
+                .try_collect()
+                .await
+                .map_err(failed(host))?;
+        } else {
+            let _: Vec<_> = self
+                .session
+                .expunge()
+                .await
+                .map_err(failed(host))?
+                .try_collect()
+                .await
+                .map_err(failed(host))?;
+        }
+        Ok(())
+    }
+}
+
+impl Session for Connection {
+    async fn close(mut self) {
         let _ = tokio::time::timeout(Duration::from_secs(5), self.session.logout()).await;
     }
 
-    pub async fn folders(&mut self, host: &str) -> Result<Vec<FolderInfo>, String> {
+    async fn folders(&mut self, host: &str) -> Result<Vec<FolderInfo>, String> {
         let names: Vec<_> = self
             .session
             .list(Some(""), Some("*"))
@@ -158,7 +259,7 @@ impl Connection {
         Ok(folders)
     }
 
-    pub async fn sync(&mut self, host: &str, mailbox: &mut Mailbox) -> Result<Vec<u32>, String> {
+    async fn sync(&mut self, host: &str, mailbox: &mut Mailbox) -> Result<Vec<u32>, String> {
         let selected = self
             .session
             .select(&mailbox.name)
@@ -240,7 +341,7 @@ impl Connection {
         Ok(whole.into_iter().chain(large).collect())
     }
 
-    pub async fn search_into(
+    async fn search_into(
         &mut self,
         host: &str,
         mailbox: &mut Mailbox,
@@ -315,7 +416,7 @@ impl Connection {
         Ok(found.len())
     }
 
-    pub async fn watch(
+    async fn watch(
         mut self,
         host: &str,
         mailbox: &str,
@@ -336,69 +437,7 @@ impl Connection {
         ))
     }
 
-    async fn fetch_into(
-        &mut self,
-        host: &str,
-        mailbox: &mut Mailbox,
-        uids: &[u32],
-        query: &str,
-    ) -> Result<(), String> {
-        let set = uids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        let fetched: Vec<Fetch> = self
-            .session
-            .uid_fetch(set, query)
-            .await
-            .map_err(failed(host))?
-            .try_collect()
-            .await
-            .map_err(failed(host))?;
-        let mime_path = SectionPath::Part(vec![1], Some(MessageSection::Mime));
-        let part_path = SectionPath::Part(vec![1], None);
-        let name = mailbox.name.clone();
-        for fetch in &fetched {
-            let Some(uid) = fetch.uid else { continue };
-            let arrived = fetch.internal_date().map(|date| date.with_timezone(&Utc));
-            let parsed = match fetch.body() {
-                Some(raw) => mime::parse(&Fetched {
-                    mailbox: &name,
-                    uid,
-                    seen: seen(fetch),
-                    header: raw,
-                    body: Body::Whole,
-                    arrived,
-                }),
-                None => fetch.header().and_then(|header| {
-                    mime::parse(&Fetched {
-                        mailbox: &name,
-                        uid,
-                        seen: seen(fetch),
-                        header,
-                        body: Body::FirstPart {
-                            mime: fetch.section(&mime_path),
-                            data: fetch.section(&part_path).unwrap_or_default(),
-                            attachments: fetch
-                                .bodystructure()
-                                .map(mime::attachment_names)
-                                .unwrap_or_default(),
-                            html: fetch.bodystructure().is_some_and(mime::has_html),
-                        },
-                        arrived,
-                    })
-                }),
-            };
-            if let Some(mut message) = parsed {
-                message.flagged = flagged(fetch);
-                mailbox.messages.insert(uid, message);
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn whole(&mut self, host: &str, mailbox: &str, uid: u32) -> Result<Vec<u8>, String> {
+    async fn whole(&mut self, host: &str, mailbox: &str, uid: u32) -> Result<Vec<u8>, String> {
         self.session.examine(mailbox).await.map_err(failed(host))?;
         let fetched: Vec<Fetch> = self
             .session
@@ -414,7 +453,7 @@ impl Connection {
             .ok_or_else(|| format!("{host} no longer has this message"))
     }
 
-    pub async fn set_flag(
+    async fn set_flag(
         &mut self,
         host: &str,
         mailbox: &str,
@@ -435,43 +474,7 @@ impl Connection {
         .await
     }
 
-    async fn store(&mut self, host: &str, set: &str, query: &str) -> Result<(), String> {
-        let _: Vec<Fetch> = self
-            .session
-            .uid_store(set, query)
-            .await
-            .map_err(failed(host))?
-            .try_collect()
-            .await
-            .map_err(failed(host))?;
-        Ok(())
-    }
-
-    async fn expunge(&mut self, host: &str, set: &str) -> Result<(), String> {
-        let capabilities = self.session.capabilities().await.map_err(failed(host))?;
-        if capabilities.has_str("UIDPLUS") {
-            let _: Vec<_> = self
-                .session
-                .uid_expunge(set)
-                .await
-                .map_err(failed(host))?
-                .try_collect()
-                .await
-                .map_err(failed(host))?;
-        } else {
-            let _: Vec<_> = self
-                .session
-                .expunge()
-                .await
-                .map_err(failed(host))?
-                .try_collect()
-                .await
-                .map_err(failed(host))?;
-        }
-        Ok(())
-    }
-
-    pub async fn move_to(
+    async fn move_to(
         &mut self,
         host: &str,
         mailbox: &str,
@@ -499,7 +502,7 @@ impl Connection {
         self.expunge(host, &uid_set(uids)).await
     }
 
-    pub async fn delete(&mut self, host: &str, mailbox: &str, uids: &[u32]) -> Result<(), String> {
+    async fn delete(&mut self, host: &str, mailbox: &str, uids: &[u32]) -> Result<(), String> {
         if uids.is_empty() {
             return Ok(());
         }
@@ -509,24 +512,24 @@ impl Connection {
         self.expunge(host, &uid_set(uids)).await
     }
 
-    pub async fn empty(&mut self, host: &str, mailbox: &str, highest: u32) -> Result<(), String> {
+    async fn empty(&mut self, host: &str, mailbox: &str, highest: u32) -> Result<(), String> {
         self.session.select(mailbox).await.map_err(failed(host))?;
         let set = format!("1:{highest}");
         self.store(host, &set, "+FLAGS.SILENT (\\Deleted)").await?;
         self.expunge(host, &set).await
     }
 
-    pub async fn create(&mut self, host: &str, mailbox: &str) -> Result<(), String> {
+    async fn create(&mut self, host: &str, mailbox: &str) -> Result<(), String> {
         self.session.create(mailbox).await.map_err(failed(host))?;
         let _ = self.session.subscribe(mailbox).await;
         Ok(())
     }
 
-    pub async fn append(&mut self, host: &str, mailbox: &str, raw: &[u8]) -> Result<(), String> {
+    async fn append(&mut self, host: &str, mailbox: &str, raw: &[u8]) -> Result<(), String> {
         self.append_with(host, mailbox, raw, "(\\Seen)").await
     }
 
-    pub async fn append_with(
+    async fn append_with(
         &mut self,
         host: &str,
         mailbox: &str,

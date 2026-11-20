@@ -16,6 +16,7 @@ mod model;
 mod presets;
 mod search;
 mod secrets;
+mod server;
 mod smtp;
 mod subject;
 mod thread;
@@ -40,8 +41,8 @@ pub use subject::normalize as subject_of;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use cache::{AccountData, Mailbox, UnsentCopy};
-use imap::Connection;
 use mime::{Body, Fetched};
+use server::{Live, Server, Session};
 
 const SYNC_EVERY: Duration = Duration::from_secs(120);
 // Short enough that a server never parks the idling connection, which on
@@ -224,6 +225,15 @@ impl Store {
         cache_dir: PathBuf,
         notify: impl Fn() + Send + Sync + 'static,
     ) -> Store {
+        Store::with_server(config_dir, cache_dir, Live, notify)
+    }
+
+    fn with_server(
+        config_dir: PathBuf,
+        cache_dir: PathBuf,
+        server: impl Server,
+        notify: impl Fn() + Send + Sync + 'static,
+    ) -> Store {
         let shared = Arc::new(Shared {
             published: RwLock::new(Snapshot::default()),
             status: RwLock::new(Status::Syncing),
@@ -233,6 +243,7 @@ impl Store {
         });
         let (commands, receiver) = mpsc::unbounded_channel();
         let worker = Worker {
+            server: Arc::new(server),
             shared: Arc::clone(&shared),
             accounts_path: config_dir.join("accounts.json"),
             cache_dir,
@@ -527,7 +538,8 @@ impl MailSource for Store {
     }
 }
 
-struct Worker {
+struct Worker<S: Server> {
+    server: Arc<S>,
     shared: Arc<Shared>,
     accounts_path: PathBuf,
     cache_dir: PathBuf,
@@ -545,9 +557,9 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
         .expect("a blocking task")
 }
 
-impl Worker {
+impl<S: Server> Worker<S> {
     async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
-        if let Err(error) = blocking(secrets::open).await {
+        if let Err(error) = self.server.open_keyring().await {
             self.set_status(Status::Failed(error));
         }
         let path = self.accounts_path.clone();
@@ -564,7 +576,9 @@ impl Worker {
         for account in self.accounts.clone() {
             self.watch(account);
         }
-        let mut ticker = tokio::time::interval(SYNC_EVERY);
+        self.sync().await;
+        let mut ticker =
+            tokio::time::interval_at(tokio::time::Instant::now() + SYNC_EVERY, SYNC_EVERY);
         loop {
             tokio::select! {
                 command = commands.recv() => match command {
@@ -578,13 +592,13 @@ impl Worker {
 
     fn watch(&mut self, account: Account) {
         let own = self.own.clone();
+        let server = Arc::clone(&self.server);
         let key = account.key();
         let watcher = tokio::spawn(async move {
             let host = account.imap_host.trim().to_string();
             loop {
-                let key = account.key();
-                let opened = match blocking(move || secrets::password(&key)).await {
-                    Ok(password) => Connection::open(&account, &password).await,
+                let opened = match server.password(&account.key()).await {
+                    Ok(password) => server.connect(&account, &password).await,
                     Err(error) => Err(error),
                 };
                 let Ok(mut connection) = opened else {
@@ -633,10 +647,9 @@ impl Worker {
         let known = self
             .account(account)
             .ok_or("that account is no longer signed in")?;
-        Connection::open(&known, &password).await?.close().await;
-        smtp::check(&known, &password).await?;
-        let key = known.key();
-        blocking(move || secrets::save(&key, &password)).await?;
+        self.server.connect(&known, &password).await?.close().await;
+        self.server.check_smtp(&known, &password).await?;
+        self.server.save_password(&known.key(), &password).await?;
         self.locked.remove(account);
         self.publish();
         Ok(())
@@ -768,8 +781,7 @@ impl Worker {
                 if let Some(watcher) = self.watchers.remove(&account) {
                     watcher.abort();
                 }
-                let key = account.clone();
-                let _ = blocking(move || secrets::forget(&key)).await;
+                let _ = self.server.forget_password(&account).await;
                 self.accounts.retain(|known| known.key() != account);
                 self.data.remove(&account);
                 let _ = std::fs::remove_file(self.data_path(&account));
@@ -890,19 +902,17 @@ impl Worker {
             .cloned()
     }
 
-    async fn password(account: &str) -> Result<String, String> {
-        let key = account.to_string();
-        blocking(move || secrets::password(&key)).await
-    }
-
     async fn sign_in(&mut self, account: Account, password: String) -> Result<(), String> {
         if self.account(&account.key()).is_some() {
             return Err(format!("{} is already signed in", account.address.trim()));
         }
-        Connection::open(&account, &password).await?.close().await;
-        smtp::check(&account, &password).await?;
-        let key = account.key();
-        blocking(move || secrets::save(&key, &password)).await?;
+        self.server
+            .connect(&account, &password)
+            .await?
+            .close()
+            .await;
+        self.server.check_smtp(&account, &password).await?;
+        self.server.save_password(&account.key(), &password).await?;
         self.data.insert(account.key(), AccountData::default());
         self.accounts.push(account);
         self.colour_accounts();
@@ -945,9 +955,9 @@ impl Worker {
     }
 
     async fn sync_account(&mut self, account: &Account) -> Result<(), String> {
-        let password = Self::password(&account.key()).await?;
+        let password = self.server.password(&account.key()).await?;
         let host = account.imap_host.trim().to_string();
-        let mut connection = Connection::open(account, &password).await?;
+        let mut connection = self.server.connect(account, &password).await?;
         let mut data = self.data.remove(&account.key()).unwrap_or_default();
         let open = match &self.open {
             Scope::Mailbox { account: key, name } if *key == account.key() => Some(name.clone()),
@@ -1069,9 +1079,9 @@ impl Worker {
     }
 
     async fn sync_folder(&mut self, account: &Account, name: &str) -> Result<(), String> {
-        let password = Self::password(&account.key()).await?;
+        let password = self.server.password(&account.key()).await?;
         let host = account.imap_host.trim().to_string();
-        let mut connection = Connection::open(account, &password).await?;
+        let mut connection = self.server.connect(account, &password).await?;
         let mut data = self.data.remove(&account.key()).unwrap_or_default();
         let result = match data.other_mut(name) {
             Some(mailbox) => connection.sync(&host, mailbox).await.map(|_| ()),
@@ -1094,7 +1104,7 @@ impl Worker {
                 return;
             }
         };
-        let password = match Self::password(&account.key()).await {
+        let password = match self.server.password(&account.key()).await {
             Ok(password) => password,
             Err(error) => {
                 let _ = reply.send(Err(error));
@@ -1102,7 +1112,7 @@ impl Worker {
             }
         };
         let raw = message.formatted();
-        if let Err(error) = smtp::send(&account, &password, message).await {
+        if let Err(error) = self.server.send(&account, &password, message).await {
             let _ = reply.send(Err(error));
             return;
         }
@@ -1135,7 +1145,7 @@ impl Worker {
         let _ = reply.send(Ok(()));
         let saved = match sent_name {
             None => Err("this account has no Sent folder".to_string()),
-            Some(name) => match Connection::open(&account, &password).await {
+            Some(name) => match self.server.connect(&account, &password).await {
                 Ok(mut connection) => {
                     let appended = connection
                         .append(account.imap_host.trim(), &name, &raw)
@@ -1163,7 +1173,7 @@ impl Worker {
             ))),
         }
         if let Some((mailbox, uid)) = draft.replaces
-            && let Ok(mut connection) = Connection::open(&account, &password).await
+            && let Ok(mut connection) = self.server.connect(&account, &password).await
         {
             let _ = connection
                 .delete(account.imap_host.trim(), &mailbox, &[uid])
@@ -1272,8 +1282,8 @@ impl Worker {
         }
         let host = known.imap_host.trim().to_string();
         let result: Result<bool, String> = async {
-            let password = Self::password(account).await?;
-            let mut connection = Connection::open(&known, &password).await?;
+            let password = self.server.password(account).await?;
+            let mut connection = self.server.connect(&known, &password).await?;
             let outcome = async {
                 let mut created = false;
                 let destination = match destination {
@@ -1345,8 +1355,8 @@ impl Worker {
         self.publish();
         let host = known.imap_host.trim().to_string();
         let result = async {
-            let password = Self::password(account).await?;
-            let mut connection = Connection::open(&known, &password).await?;
+            let password = self.server.password(account).await?;
+            let mut connection = self.server.connect(&known, &password).await?;
             let emptied = connection.empty(&host, name, highest).await;
             connection.close().await;
             emptied
@@ -1369,9 +1379,9 @@ impl Worker {
             .and_then(|data| actions::role_folder(&data.folders, Role::Drafts))
             .ok_or("this account has no Drafts folder")?;
         let raw = compose::unsent(&draft, &known)?;
-        let password = Self::password(&known.key()).await?;
+        let password = self.server.password(&known.key()).await?;
         let host = known.imap_host.trim().to_string();
-        let mut connection = Connection::open(&known, &password).await?;
+        let mut connection = self.server.connect(&known, &password).await?;
         let saved = async {
             connection
                 .append_with(&host, &drafts, &raw, "(\\Draft \\Seen)")
@@ -1404,9 +1414,9 @@ impl Worker {
             let Some(known) = self.account(&account) else {
                 continue;
             };
-            let password = Self::password(&account).await?;
+            let password = self.server.password(&account).await?;
             let host = known.imap_host.trim().to_string();
-            let mut connection = Connection::open(&known, &password).await?;
+            let mut connection = self.server.connect(&known, &password).await?;
             let Some(data) = self.data.get_mut(&account) else {
                 connection.close().await;
                 continue;
@@ -1448,9 +1458,9 @@ impl Worker {
                 .and_then(|copy| STANDARD.decode(&copy.raw).ok())
                 .ok_or_else(|| "this message is not on the server yet".into());
         }
-        let password = Self::password(account).await?;
+        let password = self.server.password(account).await?;
         let host = known.imap_host.trim().to_string();
-        let mut connection = Connection::open(&known, &password).await?;
+        let mut connection = self.server.connect(&known, &password).await?;
         let raw = connection.whole(&host, &at.mailbox, at.uid).await;
         connection.close().await;
         raw
