@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Zirbe for the Linux desktop: an IMAP and SMTP account read as conversations, an
-egui application. It is the desktop sibling of excelano/zirbe, the iPhone and
+egui application. It is the desktop sibling of excelano/zirbe-ios, the iPhone and
 iPad app, and keeps that app's model and principles: a conversation is an email
 thread joined by Message-ID, In-Reply-To and References, less any private reply
 out of it (one sharing no one with the message it answers, or narrowing a group

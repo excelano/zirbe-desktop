@@ -10,7 +10,7 @@ starts a conversation of its own with the message it answers shown at the top;
 an account's other addresses, set in Settings, count as yours. Starting a new
 conversation means naming it, and that name is the subject.
 
-This is the desktop sibling of the [Zirbe app for iPhone and iPad](https://github.com/excelano/zirbe),
+This is the desktop sibling of the [Zirbe app for iPhone and iPad](https://github.com/excelano/zirbe-ios),
 with the same principles. It speaks only the email standards (IMAP, SMTP and
 MIME), has no backend and no telemetry, and connects to nothing but the mail
 servers you sign in to.
