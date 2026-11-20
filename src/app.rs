@@ -276,6 +276,7 @@ pub struct App {
     shown: Vec<String>,
     filter: Filter,
     reveal: bool,
+    page: usize,
     confirm_delete: Option<Vec<Conversation>>,
     confirm_empty: Option<Emptying>,
     confirm_sweep: Option<(Person, Vec<Conversation>)>,
@@ -333,6 +334,7 @@ impl App {
             shown: Vec::new(),
             filter: Filter::default(),
             reveal: false,
+            page: 1,
             confirm_delete: None,
             confirm_empty: None,
             confirm_sweep: None,
@@ -852,14 +854,14 @@ impl App {
                     list::height(self.settings.preview),
                     shown.len(),
                     |ui, range| {
+                        let row = list::height(self.settings.preview) + ui.spacing().item_spacing.y;
+                        self.page = ((ui.clip_rect().height() / row) as usize).max(1);
                         if std::mem::take(&mut self.reveal)
                             && let Some(at) = self
                                 .selected
                                 .as_ref()
                                 .and_then(|key| shown.iter().position(|c| &c.key == key))
                         {
-                            let row =
-                                list::height(self.settings.preview) + ui.spacing().item_spacing.y;
                             let top = ui.cursor().top() + (at as f32 - range.start as f32) * row;
                             let rect = Rect::from_min_size(
                                 pos2(ui.cursor().left(), top),
@@ -1215,20 +1217,24 @@ impl App {
     }
 
     fn step(&mut self, by: isize, modifiers: Modifiers) {
+        let Some(last) = self.shown.len().checked_sub(1) else {
+            return;
+        };
         let at = self
             .selected
             .as_ref()
             .and_then(|key| self.shown.iter().position(|k| k == key));
         let next = match at {
-            Some(at) => at
-                .checked_add_signed(by)
-                .filter(|next| *next < self.shown.len()),
-            None => (!self.shown.is_empty()).then_some(0),
+            Some(at) => at.saturating_add_signed(by).min(last),
+            None if by > 0 => (by.unsigned_abs() - 1).min(last),
+            None => 0,
         };
-        if let Some(key) = next.map(|next| self.shown[next].clone()) {
-            self.pick(&key, modifiers);
-            self.reveal = true;
+        if at == Some(next) {
+            return;
         }
+        let key = self.shown[next].clone();
+        self.pick(&key, modifiers);
+        self.reveal = true;
     }
 
     fn emptiable(&self) -> Option<Emptying> {
@@ -1392,7 +1398,15 @@ impl App {
             self.select_all();
             return;
         }
-        for (key, by) in [(Key::ArrowDown, 1), (Key::ArrowUp, -1)] {
+        let page = self.page as isize;
+        for (key, by) in [
+            (Key::ArrowDown, 1),
+            (Key::ArrowUp, -1),
+            (Key::PageDown, page),
+            (Key::PageUp, -page),
+            (Key::End, isize::MAX),
+            (Key::Home, isize::MIN),
+        ] {
             for modifiers in [Modifiers::SHIFT, Modifiers::NONE] {
                 if pressed(modifiers, key) {
                     self.step(by, modifiers);
