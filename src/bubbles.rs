@@ -889,7 +889,12 @@ fn bubble(
                 UiBuilder::new()
                     .max_rect(text_rect)
                     .layout(Layout::top_down(Align::Min)),
-                |ui| ui.add(egui::Label::new(job).wrap().selectable(true)),
+                |ui| {
+                    let selection = &mut ui.visuals_mut().selection;
+                    selection.bg_fill = color;
+                    selection.stroke.color = fill;
+                    ui.add(egui::Label::new(job).wrap().selectable(true))
+                },
             )
             .inner;
         area = area.union(label);
