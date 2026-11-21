@@ -50,7 +50,8 @@ const SYNC_EVERY: Duration = Duration::from_secs(120);
 // Short enough that a server never parks the idling connection, which on
 // cPanel's Dovecot stops new-mail notices after about thirty seconds.
 const WATCH_PATIENCE: Duration = Duration::from_secs(25);
-const WATCH_RETRY: Duration = Duration::from_secs(60);
+const WATCH_RETRY_FIRST: Duration = Duration::from_secs(15);
+const WATCH_RETRY_MOST: Duration = Duration::from_secs(15 * 60);
 
 pub type Reply<T = ()> = reply::Receiver<Result<T, String>>;
 
@@ -600,13 +601,15 @@ impl<S: Server> Worker<S> {
         let key = account.key();
         let watcher = tokio::spawn(async move {
             let host = account.imap_host.trim().to_string();
+            let mut retry = WATCH_RETRY_FIRST;
             loop {
                 let opened = match server.password(&account.key()).await {
                     Ok(password) => server.connect(&account, &password).await,
                     Err(error) => Err(error),
                 };
                 let Ok(mut connection) = opened else {
-                    tokio::time::sleep(WATCH_RETRY).await;
+                    tokio::time::sleep(retry).await;
+                    retry = (retry * 2).min(WATCH_RETRY_MOST);
                     continue;
                 };
                 let mut known = None;
@@ -614,6 +617,7 @@ impl<S: Server> Worker<S> {
                     connection.watch(&host, INBOX, WATCH_PATIENCE).await
                 {
                     connection = next;
+                    retry = WATCH_RETRY_FIRST;
                     let changed = news || known.is_some_and(|known| known != exists);
                     known = Some(exists);
                     if changed {
@@ -623,7 +627,8 @@ impl<S: Server> Worker<S> {
                         }
                     }
                 }
-                tokio::time::sleep(WATCH_RETRY).await;
+                tokio::time::sleep(retry).await;
+                retry = (retry * 2).min(WATCH_RETRY_MOST);
             }
         });
         if let Some(previous) = self.watchers.insert(key, watcher) {

@@ -29,6 +29,8 @@ const BATCH: usize = 25;
 const SEARCH_LIMIT: usize = 50;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+type Row = (Option<u32>, (bool, bool), u32);
+
 pub(crate) struct Connection {
     session: async_imap::Session<TlsStream<TcpStream>>,
 }
@@ -277,7 +279,7 @@ impl Session for Connection {
             return Ok(Vec::new());
         }
         let first = selected.exists.saturating_sub(WINDOW - 1).max(1);
-        let present: Vec<(u32, (bool, bool), u32)> = self
+        let rows: Vec<Row> = self
             .session
             .fetch(format!("{first}:*"), "(UID FLAGS RFC822.SIZE)")
             .await
@@ -286,15 +288,19 @@ impl Session for Connection {
             .await
             .map_err(failed(host))?
             .iter()
-            .filter_map(|fetch| {
-                Some((
-                    fetch.uid?,
+            .map(|fetch| {
+                (
+                    fetch.uid,
                     (seen(fetch), flagged(fetch)),
                     fetch.size.unwrap_or(0),
-                ))
+                )
             })
             .collect();
-        let mut uids: BTreeSet<u32> = present.iter().map(|(uid, _, _)| *uid).collect();
+        let held = still_held(&rows);
+        let present: Vec<(u32, (bool, bool), u32)> = rows
+            .into_iter()
+            .filter_map(|(uid, flags, size)| Some((uid?, flags, size)))
+            .collect();
         if !mailbox.found.is_empty() {
             let still: BTreeSet<u32> = self
                 .session
@@ -307,9 +313,11 @@ impl Session for Connection {
                 .into_iter()
                 .collect();
             mailbox.found.retain(|uid| still.contains(uid));
-            uids.extend(&mailbox.found);
         }
-        mailbox.messages.retain(|uid, _| uids.contains(uid));
+        if let Some(mut uids) = held {
+            uids.extend(&mailbox.found);
+            mailbox.messages.retain(|uid, _| uids.contains(uid));
+        }
         let mut whole = Vec::new();
         let mut large = Vec::new();
         for &(uid, (is_seen, is_flagged), size) in &present {
@@ -422,7 +430,7 @@ impl Session for Connection {
         mailbox: &str,
         patience: Duration,
     ) -> Result<(Connection, u32, bool), String> {
-        let selected = self.session.select(mailbox).await.map_err(failed(host))?;
+        let selected = self.session.examine(mailbox).await.map_err(failed(host))?;
         let mut idle = self.session.idle();
         idle.init().await.map_err(failed(host))?;
         let response = {
@@ -554,10 +562,27 @@ fn uid_set(uids: &[u32]) -> String {
         .join(",")
 }
 
+fn still_held(rows: &[Row]) -> Option<BTreeSet<u32>> {
+    rows.iter().map(|(uid, _, _)| *uid).collect()
+}
+
 fn flagged(fetch: &Fetch) -> bool {
     fetch.flags().any(|flag| flag == Flag::Flagged)
 }
 
 fn seen(fetch: &Fetch) -> bool {
     fetch.flags().any(|flag| flag == Flag::Seen)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::still_held;
+
+    #[test]
+    fn a_listing_with_a_line_missing_its_uid_proves_nothing_gone() {
+        let complete = [(Some(4), (true, false), 10), (Some(7), (false, false), 20)];
+        assert_eq!(still_held(&complete), Some([4, 7].into()));
+        let partial = [(Some(4), (true, false), 10), (None, (false, false), 20)];
+        assert_eq!(still_held(&partial), None);
+    }
 }

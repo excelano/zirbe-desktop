@@ -344,3 +344,17 @@ fn live_a_saved_draft_lands_in_drafts() {
     live.harness.settle();
     assert_eq!(live.found(&live.role(Role::Drafts)).len(), 1);
 }
+
+#[test]
+#[ignore = "needs the live test account"]
+fn live_new_mail_shows_without_a_refresh() {
+    let live = Live::new();
+    std::thread::sleep(Duration::from_secs(5));
+    live.seed(INBOX, &["arrives"]);
+    let deadline = Instant::now() + Duration::from_secs(45);
+    while live.tagged(&Scope::AllInboxes).is_empty() {
+        assert!(Instant::now() < deadline, "the watcher never reported the new mail");
+        std::thread::sleep(Duration::from_secs(1));
+        live.harness.settle();
+    }
+}
