@@ -17,7 +17,7 @@ use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
-use crate::cache::Mailbox;
+use crate::cache::{Listing, Mailbox};
 use crate::folders::{self, Listed};
 use crate::mime::{self, Body, Fetched};
 use crate::model::{Account, FolderInfo, Role};
@@ -28,11 +28,13 @@ const WHOLE_UP_TO: u32 = 2 * 1024 * 1024;
 const BATCH: usize = 25;
 const SEARCH_LIMIT: usize = 50;
 const TIMEOUT: Duration = Duration::from_secs(30);
+const FLAGS_EVERY: i64 = 10 * 60;
 
 type Row = (Option<u32>, (bool, bool), u32);
 
 pub(crate) struct Connection {
     session: async_imap::Session<TlsStream<TcpStream>>,
+    condstore: Option<bool>,
 }
 
 pub(crate) fn tls() -> Result<Arc<ClientConfig>, String> {
@@ -117,7 +119,10 @@ impl Connection {
                     }
                     other => format!("{host}: {other}"),
                 })?;
-        Ok(Connection { session })
+        Ok(Connection {
+            session,
+            condstore: None,
+        })
     }
 
     async fn fetch_into(
@@ -262,20 +267,45 @@ impl Session for Connection {
     }
 
     async fn sync(&mut self, host: &str, mailbox: &mut Mailbox) -> Result<Vec<u32>, String> {
-        let selected = self
-            .session
-            .select(&mailbox.name)
-            .await
-            .map_err(failed(host))?;
+        let condstore = match self.condstore {
+            Some(known) => known,
+            None => {
+                let offered = self
+                    .session
+                    .capabilities()
+                    .await
+                    .map_err(failed(host))?
+                    .has_str("CONDSTORE");
+                self.condstore = Some(offered);
+                offered
+            }
+        };
+        let selected = if condstore {
+            self.session.select_condstore(&mailbox.name).await
+        } else {
+            self.session.select(&mailbox.name).await
+        }
+        .map_err(failed(host))?;
         let validity = selected.uid_validity.unwrap_or(0);
         if validity != mailbox.uid_validity {
             mailbox.messages.clear();
             mailbox.found.clear();
+            mailbox.listed = None;
             mailbox.uid_validity = validity;
         }
         let known = !mailbox.messages.is_empty();
         if selected.exists == 0 {
             mailbox.messages.clear();
+            mailbox.listed = None;
+            return Ok(Vec::new());
+        }
+        let listing = Listing {
+            exists: selected.exists,
+            uid_next: selected.uid_next.unwrap_or(0),
+            modseq: selected.highest_modseq,
+            at: Utc::now().timestamp(),
+        };
+        if known && unchanged(mailbox.listed, listing) {
             return Ok(Vec::new());
         }
         let first = selected.exists.saturating_sub(WINDOW - 1).max(1);
@@ -314,7 +344,8 @@ impl Session for Connection {
                 .collect();
             mailbox.found.retain(|uid| still.contains(uid));
         }
-        if let Some(mut uids) = held {
+        if let Some(uids) = &held {
+            let mut uids = uids.clone();
             uids.extend(&mailbox.found);
             mailbox.messages.retain(|uid, _| uids.contains(uid));
         }
@@ -343,6 +374,7 @@ impl Session for Connection {
             )
             .await?;
         }
+        mailbox.listed = held.is_some().then_some(listing);
         if !known {
             return Ok(Vec::new());
         }
@@ -367,6 +399,7 @@ impl Session for Connection {
         if validity != mailbox.uid_validity {
             mailbox.messages.clear();
             mailbox.found.clear();
+            mailbox.listed = None;
             mailbox.uid_validity = validity;
         }
         let criteria: String = terms
@@ -439,7 +472,10 @@ impl Session for Connection {
         };
         let session = idle.done().await.map_err(failed(host))?;
         Ok((
-            Connection { session },
+            Connection {
+                session,
+                condstore: self.condstore,
+            },
             selected.exists,
             matches!(response, IdleResponse::NewData(_)),
         ))
@@ -562,6 +598,15 @@ fn uid_set(uids: &[u32]) -> String {
         .join(",")
 }
 
+fn unchanged(before: Option<Listing>, now: Listing) -> bool {
+    before.is_some_and(|before| {
+        before.exists == now.exists
+            && before.uid_next == now.uid_next
+            && before.modseq == now.modseq
+            && (now.modseq.is_some() || now.at - before.at < FLAGS_EVERY)
+    })
+}
+
 fn still_held(rows: &[Row]) -> Option<BTreeSet<u32>> {
     rows.iter().map(|(uid, _, _)| *uid).collect()
 }
@@ -576,7 +621,33 @@ fn seen(fetch: &Fetch) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::still_held;
+    use super::{Listing, still_held, unchanged};
+
+    fn listing(exists: u32, uid_next: u32, modseq: Option<u64>, at: i64) -> Listing {
+        Listing {
+            exists,
+            uid_next,
+            modseq,
+            at,
+        }
+    }
+
+    #[test]
+    fn a_folder_is_unchanged_only_while_its_counts_and_modseq_hold() {
+        let before = listing(10, 50, Some(700), 0);
+        assert!(!unchanged(None, before));
+        assert!(unchanged(Some(before), listing(10, 50, Some(700), 86_400)));
+        assert!(!unchanged(Some(before), listing(10, 50, Some(701), 60)));
+        assert!(!unchanged(Some(before), listing(9, 50, Some(700), 60)));
+        assert!(!unchanged(Some(before), listing(10, 51, Some(700), 60)));
+    }
+
+    #[test]
+    fn without_condstore_flags_are_checked_again_after_a_while() {
+        let before = listing(10, 50, None, 0);
+        assert!(unchanged(Some(before), listing(10, 50, None, 60)));
+        assert!(!unchanged(Some(before), listing(10, 50, None, 11 * 60)));
+    }
 
     #[test]
     fn a_listing_with_a_line_missing_its_uid_proves_nothing_gone() {

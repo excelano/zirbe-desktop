@@ -353,8 +353,63 @@ fn live_new_mail_shows_without_a_refresh() {
     live.seed(INBOX, &["arrives"]);
     let deadline = Instant::now() + Duration::from_secs(45);
     while live.tagged(&Scope::AllInboxes).is_empty() {
-        assert!(Instant::now() < deadline, "the watcher never reported the new mail");
+        assert!(
+            Instant::now() < deadline,
+            "the watcher never reported the new mail"
+        );
         std::thread::sleep(Duration::from_secs(1));
         live.harness.settle();
     }
+}
+
+#[test]
+#[ignore = "needs the live test account"]
+fn live_an_unchanged_folder_is_skipped_and_a_changed_one_is_read() {
+    let live = Live::new();
+    live.seed(INBOX, &["watched"]);
+    let tag = live.tag.clone();
+    live.on_server(async |connection, host| {
+        let mut mailbox = Mailbox {
+            name: INBOX.to_string(),
+            ..Mailbox::default()
+        };
+        let tagged = |mailbox: &Mailbox| {
+            mailbox
+                .messages
+                .iter()
+                .find(|(_, message)| message.subject.contains(&tag))
+                .map(|(uid, message)| (*uid, message.seen))
+                .expect("the seeded message")
+        };
+        connection
+            .sync(host, &mut mailbox)
+            .await
+            .expect("a first read");
+        let (uid, seen) = tagged(&mailbox);
+        assert!(!seen);
+        let first = mailbox.listed.expect("a recorded listing");
+        assert!(first.modseq.is_some(), "the test server offers CONDSTORE");
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        connection
+            .sync(host, &mut mailbox)
+            .await
+            .expect("a second read");
+        assert_eq!(
+            mailbox.listed,
+            Some(first),
+            "an unchanged folder was read again"
+        );
+
+        connection
+            .set_flag(host, INBOX, &[uid], "\\Seen", true)
+            .await
+            .expect("the flag set");
+        connection
+            .sync(host, &mut mailbox)
+            .await
+            .expect("a third read");
+        assert!(tagged(&mailbox).1, "the flag change was missed");
+        assert_ne!(mailbox.listed, Some(first));
+    });
 }

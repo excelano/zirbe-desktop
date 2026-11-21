@@ -18,6 +18,16 @@ pub(crate) struct Mailbox {
     pub messages: BTreeMap<u32, Message>,
     #[serde(default)]
     pub found: BTreeSet<u32>,
+    #[serde(default)]
+    pub listed: Option<Listing>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Listing {
+    pub exists: u32,
+    pub uid_next: u32,
+    pub modseq: Option<u64>,
+    pub at: i64,
 }
 
 const FORMAT: u32 = 4;

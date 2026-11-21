@@ -1014,6 +1014,7 @@ impl<S: Server> Worker<S> {
                     for uid in &unwanted {
                         data.inbox.messages.remove(uid);
                     }
+                    data.inbox.listed = None;
                 }
             }
             let mut fresh: Vec<Arrival> = arrived
@@ -1196,6 +1197,7 @@ impl<S: Server> Worker<S> {
                 && let Some(cached) = data.mailbox_mut(&mailbox)
             {
                 cached.messages.remove(&uid);
+                cached.listed = None;
             }
             self.save_data(&account.key());
             self.publish();
@@ -1251,6 +1253,7 @@ impl<S: Server> Worker<S> {
             let Some(mailbox) = data.mailbox_mut(name) else {
                 continue;
             };
+            mailbox.listed = None;
             let Some(message) = mailbox.messages.get_mut(uid) else {
                 continue;
             };
@@ -1355,6 +1358,7 @@ impl<S: Server> Worker<S> {
         let unread = data.mailbox_mut(name).map(|mailbox| {
             mailbox.messages.retain(|uid, _| *uid > highest);
             mailbox.found.retain(|uid| *uid > highest);
+            mailbox.listed = None;
             mailbox
                 .messages
                 .values()
@@ -1412,6 +1416,7 @@ impl<S: Server> Worker<S> {
             && let Some(cached) = data.mailbox_mut(&mailbox)
         {
             cached.messages.remove(&uid);
+            cached.listed = None;
         }
         self.sync_accounts(vec![known]).await;
         Ok(())
