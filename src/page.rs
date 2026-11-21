@@ -26,6 +26,7 @@ const TILE: u32 = 2048;
 const TALLEST: u32 = 40_000;
 const IMAGE_LIMIT: u64 = 10 * 1024 * 1024;
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(20);
+const TRACKING_PIXEL_AREA: f32 = 25.0;
 const BLOCKED_STYLE: &str = "display: inline-block; border: 1px solid #c8c8c8; padding: 2px 6px; \
      color: #666; font: 12px sans-serif";
 
@@ -351,11 +352,43 @@ fn image_sources(document: &BaseDocument) -> HashSet<String> {
         .tree()
         .iter()
         .filter(|(_, node)| node.data.is_element_with_tag_name(&local_name!("img")))
+        .filter(|(_, node)| !tracking_pixel(node))
         .filter_map(|(_, node)| node.data.attr(local_name!("src")))
         .filter_map(|source| url::Url::parse(source.trim()).ok())
         .filter(|url| matches!(url.scheme(), "https" | "http"))
         .map(String::from)
         .collect()
+}
+
+fn tracking_pixel(node: &blitz_dom::Node) -> bool {
+    let size = |name| node.data.attr(name).and_then(pixels);
+    if let (Some(width), Some(height)) = (size(local_name!("width")), size(local_name!("height")))
+        && width * height <= TRACKING_PIXEL_AREA
+    {
+        return true;
+    }
+    node.data
+        .attr(local_name!("style"))
+        .unwrap_or_default()
+        .split(';')
+        .filter_map(|declaration| declaration.split_once(':'))
+        .any(|(property, value)| {
+            let value = value.trim().to_ascii_lowercase();
+            match property.trim().to_ascii_lowercase().as_str() {
+                "width" | "height" | "max-width" | "max-height" => {
+                    pixels(&value).is_some_and(|length| length <= 1.0)
+                }
+                "display" => value == "none",
+                "visibility" => value == "hidden",
+                _ => false,
+            }
+        })
+}
+
+fn pixels(length: &str) -> Option<f32> {
+    let length = length.trim();
+    let number = length.strip_suffix("px").unwrap_or(length).trim();
+    number.parse().ok()
 }
 
 fn label_blocked_images(document: &mut BaseDocument) {
@@ -462,7 +495,9 @@ fn fetch_image(url: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Renderer, data_url, remote};
+    use super::{Renderer, data_url, image_sources, remote};
+    use blitz_dom::DocumentConfig;
+    use blitz_html::HtmlDocument;
     use std::sync::mpsc;
 
     fn link_finder(body: &str) -> Renderer {
@@ -507,5 +542,22 @@ mod tests {
         );
         assert_eq!(column.link_at(10.0, 20.0), None);
         assert_eq!(column.link_at(100.0, 50.0), None);
+    }
+
+    #[test]
+    fn show_images_still_leaves_out_tracking_pixels() {
+        let html = "<img src=\"https://x.test/logo.png\" width=\"120\" height=\"40\">\
+            <img src=\"https://x.test/photo.jpg\">\
+            <img src=\"https://x.test/open.gif\" width=\"1\" height=\"1\">\
+            <img src=\"https://x.test/beacon.gif\" style=\"width: 1px; height: 1px\">\
+            <img src=\"https://x.test/hidden.gif\" style=\"display:none\">\
+            <img src=\"https://x.test/pixel.gif\" width=\"5\" height=\"5\">";
+        let document = HtmlDocument::from_html(html, DocumentConfig::default());
+        let mut allowed: Vec<String> = image_sources(&document).into_iter().collect();
+        allowed.sort();
+        assert_eq!(
+            allowed,
+            ["https://x.test/logo.png", "https://x.test/photo.jpg"]
+        );
     }
 }
