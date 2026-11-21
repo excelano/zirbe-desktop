@@ -2169,7 +2169,10 @@ impl App {
                     .rev()
                     .find(|message| message.html)
             {
-                self.open_reading(&conversation, message.clone(), self.settings.load_images);
+                let images = self
+                    .settings
+                    .images_for(message.from.as_ref().map(|from| from.address.as_str()));
+                self.open_reading(&conversation, message.clone(), images);
             }
         }
         if self.reading.is_some() {
@@ -2201,7 +2204,7 @@ impl App {
                                 self.clock,
                                 &palette,
                                 &bubbles::View {
-                                    images_by_default: self.settings.load_images,
+                                    settings: &self.settings,
                                     expanded: &self.expanded,
                                     thumbs: &self.thumbs,
                                     wanted: &wanted,
@@ -2350,6 +2353,9 @@ impl App {
         let mut close = false;
         let mut toggle = false;
         let mut clicked = None;
+        let mut trust = None;
+        let trusted = &self.settings;
+        let trusts = |sender: &str| trusted.trusts(sender);
         let mut choice = None;
         Frame::new()
             .inner_margin(Margin::symmetric(16, 8))
@@ -2377,6 +2383,33 @@ impl App {
                         };
                         if ui.add(control(label)).on_hover_text(hint).clicked() {
                             toggle = true;
+                        }
+                        if let Some(sender) = reading
+                            .message
+                            .from
+                            .as_ref()
+                            .map(|from| from.address.to_lowercase())
+                            .filter(|sender| !trusts(sender))
+                        {
+                            let domain = sender
+                                .rsplit_once('@')
+                                .map(|(_, domain)| domain.to_string())
+                                .unwrap_or_default();
+                            MenuButton::from_button(control("Always Show Images")).ui(
+                                ui,
+                                |ui| {
+                                    if ui.button(format!("From {sender}")).clicked() {
+                                        trust = Some(sender.clone());
+                                        ui.close();
+                                    }
+                                    if !domain.is_empty()
+                                        && ui.button(format!("From anyone at {domain}")).clicked()
+                                    {
+                                        trust = Some(domain.clone());
+                                        ui.close();
+                                    }
+                                },
+                            );
                         }
                     });
                 });
@@ -2421,6 +2454,11 @@ impl App {
                     .show(ui, |ui| page.show(ui));
                 clicked = page.take_click();
             }
+        }
+        if let Some(entry) = trust {
+            self.settings.trust(&entry);
+            self.settings.save();
+            toggle = !reading.images;
         }
         if toggle {
             reading.images = !reading.images;
@@ -2937,7 +2975,7 @@ impl App {
         let palette = self.palette;
         let mut open = true;
         let mut sign_out = None;
-        let mut settings = self.settings;
+        let mut settings = self.settings.clone();
         egui::Window::new("Settings")
             .open(&mut open)
             .collapsible(false)
@@ -2948,6 +2986,30 @@ impl App {
                 ui.label(RichText::new("Reading").strong().color(palette.text));
                 ui.checkbox(&mut settings.open_html, "Open HTML email in Web View");
                 ui.checkbox(&mut settings.load_images, "Load remote images");
+                if !settings.load_images && !settings.trusted_images.is_empty() {
+                    ui.label(
+                        RichText::new("Images always load from:")
+                            .size(12.0)
+                            .color(palette.secondary),
+                    );
+                    let mut untrusted = None;
+                    for (index, trusted) in settings.trusted_images.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.add_space(12.0);
+                            ui.label(trusted);
+                            if ui
+                                .small_button("✕")
+                                .on_hover_text("Stop loading its images without asking")
+                                .clicked()
+                            {
+                                untrusted = Some(index);
+                            }
+                        });
+                    }
+                    if let Some(index) = untrusted {
+                        settings.trusted_images.remove(index);
+                    }
+                }
                 ui.checkbox(&mut settings.notify, "New mail notifications");
                 ui.horizontal(|ui| {
                     ui.label("Preview");
@@ -3018,8 +3080,8 @@ impl App {
             store.sign_out(&account);
         }
         if settings != self.settings {
-            self.settings = settings;
             settings.save();
+            self.settings = settings;
         }
         self.settings_open = open;
     }

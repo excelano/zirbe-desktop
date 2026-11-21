@@ -19,6 +19,7 @@ use crate::dates;
 use crate::list;
 use crate::media::{is_audio, is_video};
 use crate::palette::Palette;
+use crate::settings::Settings;
 use crate::system::Clock;
 
 const GAP_FOR_A_TIME: i64 = 60 * 60;
@@ -78,7 +79,7 @@ pub fn key_of(message: &Message) -> String {
 }
 
 pub struct View<'a> {
-    pub images_by_default: bool,
+    pub settings: &'a Settings,
     pub expanded: &'a HashMap<String, String>,
     pub thumbs: &'a HashMap<String, Thumb>,
     pub wanted: &'a RefCell<Vec<(Message, usize)>>,
@@ -101,7 +102,7 @@ enum Mark {
 
 struct Style<'a> {
     palette: &'a Palette,
-    images_by_default: bool,
+    settings: &'a Settings,
     expanded: &'a HashMap<String, String>,
     faces: &'a Faces,
     sound: Option<&'a Sound<'a>>,
@@ -162,7 +163,7 @@ pub fn show(
 ) -> Option<Action> {
     let style = Style {
         palette,
-        images_by_default: view.images_by_default,
+        settings: view.settings,
         expanded: view.expanded,
         faces: view.faces,
         sound: view.sound.as_ref(),
@@ -751,7 +752,9 @@ fn bubble(
     mark: Mark,
 ) -> (Option<Choice>, Rect) {
     let palette = style.palette;
-    let images_by_default = style.images_by_default;
+    let images_by_default = style
+        .settings
+        .images_for(message.from.as_ref().map(|from| from.address.as_str()));
     let (fill, color) = if mine {
         (palette.accent, palette.on_accent)
     } else {

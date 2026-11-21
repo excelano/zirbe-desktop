@@ -144,7 +144,9 @@ drawn by Zirbe itself with nothing loaded from the network; pictures the sender
 embedded in the message still show. Show Images loads the sender's linked
 pictures too, which can tell the sender you opened the message and roughly
 where you are. Settings can open HTML email in Web View and load its pictures
-without being asked; both are off until you turn them on. A link in Web View
+without being asked; both are off until you turn them on. Always Show Images,
+beside Show Images, loads pictures without asking for one sender or for anyone
+at their domain, and Settings lists those choices to take back. A link in Web View
 opens in your browser after a dialog shows the site it really goes to, warns
 when the link's text names a different site or the address is numeric or
 written in look-alike letters, and offers the address without its tracking
