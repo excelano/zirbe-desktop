@@ -407,13 +407,17 @@ fn new_mail_announced_by_the_server_is_fetched_and_queued_as_an_arrival() {
         .server
         .deliver(INBOX, &mail("b", "ben@example.org", "Hike", 2, None));
     let deadline = Instant::now() + WAIT;
-    let arrivals = loop {
-        let arrivals = harness.store.arrivals();
-        if !arrivals.is_empty() || Instant::now() > deadline {
-            break arrivals;
+    let mut arrivals = Vec::new();
+    loop {
+        arrivals.extend(harness.store.arrivals());
+        let listed = harness
+            .titles(&Scope::AllInboxes)
+            .contains(&"Hike".to_string());
+        if (!arrivals.is_empty() && listed) || Instant::now() > deadline {
+            break;
         }
         std::thread::sleep(Duration::from_millis(50));
-    };
+    }
     assert_eq!(arrivals.len(), 1);
     assert_eq!(arrivals[0].subject, "Hike");
     assert!(
