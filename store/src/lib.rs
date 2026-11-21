@@ -350,6 +350,7 @@ impl Store {
             own: commands.clone(),
             watchers: HashMap::new(),
             locked: BTreeSet::new(),
+            written: std::sync::Mutex::new(HashMap::new()),
         };
         std::thread::Builder::new()
             .name("mail sync".into())
@@ -646,6 +647,7 @@ struct Worker<S: Server> {
     own: mpsc::UnboundedSender<Command>,
     watchers: HashMap<String, tokio::task::JoinHandle<()>>,
     locked: BTreeSet<String>,
+    written: std::sync::Mutex<HashMap<String, u64>>,
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
@@ -886,6 +888,7 @@ impl<S: Server> Worker<S> {
                 self.accounts.retain(|known| known.key() != account);
                 self.data.remove(&account);
                 let _ = std::fs::remove_file(self.data_path(&account));
+                self.written.lock().expect("written lock").remove(&account);
                 self.save_accounts();
                 self.publish();
                 if self.accounts.is_empty() {
@@ -996,7 +999,12 @@ impl<S: Server> Worker<S> {
 
     fn save_data(&self, account: &str) {
         if let Some(data) = self.data.get(account) {
-            let _ = cache::save_data(&self.data_path(account), data);
+            let mut written = self.written.lock().expect("written lock");
+            let mut last = written.get(account).copied();
+            let _ = cache::save_data(&self.data_path(account), data, &mut last);
+            if let Some(last) = last {
+                written.insert(account.to_string(), last);
+            }
         }
     }
 

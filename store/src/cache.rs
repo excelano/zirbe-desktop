@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::Path;
 
@@ -187,8 +188,21 @@ pub(crate) fn load_data(path: &Path) -> AccountData {
     data
 }
 
-pub(crate) fn save_data(path: &Path, data: &AccountData) -> Result<(), String> {
-    write(path, data)
+pub(crate) fn save_data(
+    path: &Path,
+    data: &AccountData,
+    written: &mut Option<u64>,
+) -> Result<(), String> {
+    let text = serde_json::to_string(data).map_err(|error| error.to_string())?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    let fingerprint = hasher.finish();
+    if *written == Some(fingerprint) {
+        return Ok(());
+    }
+    write_text(path, &text)?;
+    *written = Some(fingerprint);
+    Ok(())
 }
 
 fn read<T: DeserializeOwned>(path: &Path) -> Option<T> {
@@ -197,6 +211,10 @@ fn read<T: DeserializeOwned>(path: &Path) -> Option<T> {
 
 fn write<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<(), String> {
     let text = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    write_text(path, &text)
+}
+
+fn write_text(path: &Path, text: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     }

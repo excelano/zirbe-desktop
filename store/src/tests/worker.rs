@@ -537,3 +537,35 @@ fn a_waiting_message_the_server_later_refuses_is_kept_in_drafts() {
     assert!(harness.titles(&Scope::AllInboxes).is_empty());
     assert!(matches!(harness.store.status(), Status::Failed(error) if error.contains("Drafts")));
 }
+
+#[test]
+fn a_sync_that_changes_nothing_leaves_the_cache_file_alone() {
+    let harness = signed_in(|fake| {
+        fake.deliver(INBOX, &mail("a", "ana@example.org", "Lunch", 1, None));
+    });
+    let file = std::fs::read_dir(harness.dir.join("cache"))
+        .expect("a cache folder")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .expect("an account's cache file");
+    let written = |path: &std::path::Path| {
+        std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .expect("a modified time")
+    };
+    let before = written(&file);
+    std::thread::sleep(Duration::from_millis(20));
+    harness.store.refresh();
+    harness.settle();
+    assert_eq!(written(&file), before);
+    harness
+        .server
+        .deliver(INBOX, &mail("b", "ben@example.org", "Hike", 2, None));
+    harness.store.refresh();
+    harness.settle();
+    assert_ne!(written(&file), before);
+}
