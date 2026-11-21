@@ -54,6 +54,11 @@ pub(crate) fn reaction(message: &mail_parser::Message<'_>) -> Option<String> {
             return Some(decoded);
         }
     }
+    if message.in_reply_to().is_some()
+        && let Some(emoji) = standard_reaction(message)
+    {
+        return Some(emoji);
+    }
     message
         .parts()
         .find(|part| part.is_content_type("text", "vnd.google.email-reaction+json"))
@@ -107,6 +112,25 @@ pub(crate) fn attachment(raw: &[u8], index: usize, name: &str) -> Option<Vec<u8>
         .filter(|part| name_of(part) == name)
         .or_else(|| parts.iter().find(|part| name_of(part) == name))?;
     Some(part.decoded().into_owned())
+}
+
+fn standard_reaction(message: &mail_parser::Message<'_>) -> Option<String> {
+    let root = message.root_part();
+    let part = if root.is_multipart() {
+        root.children().next()?
+    } else {
+        root
+    };
+    let marked = part
+        .content_disposition()
+        .is_some_and(|disposition| disposition.ctype().eq_ignore_ascii_case("reaction"));
+    (marked && part.is_content_type("text", "plain")).then(|| {
+        part.text()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
 }
 
 pub(crate) fn original(raw: &[u8]) -> Option<Original> {
@@ -267,6 +291,31 @@ mod tests {
         assert!(!folds_quote("Done.\n-- \nAna Lopez\nExcelano"));
         assert!(!folds_quote("> only a quote"));
         assert!(!folds_quote("> Lunch?\nYes, noon.\n> Where?\nThe usual."));
+    }
+
+    fn parsed(raw: &str) -> Option<String> {
+        let message = mail_parser::MessageParser::default()
+            .parse(raw.as_bytes())
+            .expect("a message");
+        super::reaction(&message)
+    }
+
+    #[test]
+    fn reads_a_standard_reaction_from_another_client() {
+        let single = "From: a@example.org\r\nIn-Reply-To: <t@example.org>\r\n\
+            Content-Type: text/plain; charset=utf-8\r\nContent-Disposition: reaction\r\n\r\n\u{1F44D}\r\n";
+        assert_eq!(parsed(single).as_deref(), Some("\u{1F44D}"));
+        let withdrawn = "From: a@example.org\r\nIn-Reply-To: <t@example.org>\r\n\
+            Content-Type: text/plain; charset=utf-8\r\nContent-Disposition: reaction\r\n\r\n\r\n";
+        assert_eq!(parsed(withdrawn).as_deref(), Some(""));
+        let first_part = "From: a@example.org\r\nIn-Reply-To: <t@example.org>\r\n\
+            Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n\
+            Content-Type: text/plain; charset=utf-8\r\nContent-Disposition: reaction\r\n\r\n\u{2764}\r\n\
+            --b\r\nContent-Type: text/plain\r\n\r\nNice.\r\n--b--\r\n";
+        assert_eq!(parsed(first_part).as_deref(), Some("\u{2764}"));
+        let unanswered = "From: a@example.org\r\nContent-Type: text/plain; charset=utf-8\r\n\
+            Content-Disposition: reaction\r\n\r\n\u{1F44D}\r\n";
+        assert_eq!(parsed(unanswered), None);
     }
 
     #[test]

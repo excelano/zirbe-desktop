@@ -137,7 +137,10 @@ fn reactions_of(
         );
     }
     let mut found: HashMap<String, Vec<String>> = HashMap::new();
-    for ((target, _), (_, emoji)) in latest {
+    for ((target, _), (_, emoji)) in latest
+        .into_iter()
+        .filter(|(_, (_, emoji))| !emoji.is_empty())
+    {
         found.entry(target).or_default().push(emoji);
     }
     found

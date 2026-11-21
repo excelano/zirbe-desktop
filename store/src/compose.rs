@@ -148,7 +148,12 @@ fn assemble(
         builder = builder.references(draft.references.join(" "));
     }
     let text = draft.body.replace("\r\n", "\n");
-    let built = if draft.attachments.is_empty() {
+    let built = if draft.reaction.is_some() && draft.attachments.is_empty() {
+        builder
+            .header(ContentType::TEXT_PLAIN)
+            .header(ReactionPart)
+            .body(text)
+    } else if draft.attachments.is_empty() {
         builder.header(ContentType::TEXT_PLAIN).body(text)
     } else {
         let mut parts = MultiPart::mixed().singlepart(SinglePart::plain(text));
@@ -181,34 +186,30 @@ impl lettre::message::header::Header for ZirbeReaction {
     }
 }
 
+#[derive(Clone)]
+struct ReactionPart;
+
+impl lettre::message::header::Header for ReactionPart {
+    fn name() -> lettre::message::header::HeaderName {
+        lettre::message::header::HeaderName::new_from_ascii_str("Content-Disposition")
+    }
+
+    fn parse(_: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(ReactionPart)
+    }
+
+    fn display(&self) -> lettre::message::header::HeaderValue {
+        lettre::message::header::HeaderValue::new(Self::name(), "reaction".into())
+    }
+}
+
 pub fn reaction(
     conversation: &Conversation,
     account: &Account,
     target: &Message,
     emoji: &str,
 ) -> Draft {
-    let excerpt: String = {
-        let text = target.text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let base = if text.is_empty() {
-            target.subject.trim().to_string()
-        } else {
-            text
-        };
-        if base.chars().count() > 40 {
-            format!(
-                "{}\u{2026}",
-                base.chars().take(40).collect::<String>().trim_end()
-            )
-        } else {
-            base
-        }
-    };
-    let body = if excerpt.is_empty() {
-        format!("Reacted {emoji}")
-    } else {
-        format!("Reacted {emoji} to \u{201C}{excerpt}\u{201D}")
-    };
-    let mut draft = reply(conversation, account, body, None);
+    let mut draft = reply(conversation, account, emoji.to_string(), None);
     if let Some(id) = &target.message_id {
         draft.references = target.references.clone();
         if draft.references.last() != Some(id) {
@@ -407,7 +408,7 @@ mod tests {
         target.text = "Lunch at noon?".into();
         let thread = conversation(vec![target.clone()]);
         let draft = super::reaction(&thread, &account(), &target, "👍");
-        assert_eq!(draft.body, "Reacted 👍 to “Lunch at noon?”");
+        assert_eq!(draft.body, "👍");
         assert_eq!(draft.in_reply_to.as_deref(), Some("<a>"));
         let (message, _) = build(&draft, &account()).expect("a message");
         let raw = message.formatted();
@@ -415,5 +416,8 @@ mod tests {
             .parse(&raw)
             .expect("parsed");
         assert_eq!(crate::content::reaction(&parsed).as_deref(), Some("👍"));
+        let text = String::from_utf8_lossy(&raw);
+        assert!(text.contains("Content-Disposition: reaction"));
+        assert!(text.contains("X-Zirbe-Reaction:"));
     }
 }

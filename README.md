@@ -66,8 +66,9 @@ place and organizer, a Join button for Teams, Meet, Zoom and Webex links, and
 Add to Calendar, which hands the invitation to the calendar application; answers
 to it read as a line such as "Ana accepted". The right-click menu also reacts
 to a message with 👍 👎 ❤ 😂 ‼ or ❓, shown at once and sent after five seconds
-unless undone; each Zirbe app shows the other's reactions as badges, and
-Gmail's reactions show the same way. In Settings each account
+unless undone. Reactions are standard email reactions (RFC 9078), so each Zirbe
+app shows the other's as badges, and so do mail programs that support the
+standard, such as Delta Chat; Gmail's reactions show the same way. In Settings each account
 can have a label and one of eight colors, shown as a dot beside its
 conversations in All Inboxes; an account whose server starts refusing the saved
 password says so there and takes a new one with Sign In Again; and the list can

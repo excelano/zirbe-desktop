@@ -413,3 +413,48 @@ fn live_an_unchanged_folder_is_skipped_and_a_changed_one_is_read() {
         assert_ne!(mailbox.listed, Some(first));
     });
 }
+
+#[test]
+#[ignore = "needs the live test account"]
+fn live_a_reaction_arrives_as_a_standard_reaction() {
+    let live = Live::new();
+    let draft = Draft {
+        account: live.harness.key(),
+        to: vec![Person {
+            name: None,
+            address: live.harness.account.address.clone(),
+        }],
+        subject: format!("Re: {} reacted", live.tag),
+        body: "\u{1F44D}".into(),
+        in_reply_to: Some("<zirbe-live-target@example.org>".into()),
+        references: vec!["<zirbe-live-target@example.org>".into()],
+        reaction: Some("\u{1F44D}".into()),
+        ..Draft::default()
+    };
+    live.harness
+        .store
+        .send(draft)
+        .recv_timeout(super::harness::WAIT)
+        .expect("a send reply")
+        .expect("a sent reaction");
+    live.eventually("the reaction to reach the inbox", || {
+        !live.found(INBOX).is_empty()
+    });
+    let uid = live.found(INBOX)[0].uid;
+    let raw = live.on_server(async |connection, host| {
+        connection
+            .whole(host, INBOX, uid)
+            .await
+            .expect("the raw message")
+    });
+    let text = String::from_utf8_lossy(&raw).to_string();
+    assert!(text.contains("Content-Disposition: reaction"), "{text}");
+    let without_ours = text.replace("X-Zirbe-Reaction:", "X-Ignored:");
+    let message = mail_parser::MessageParser::default()
+        .parse(without_ours.as_bytes())
+        .expect("a parsed reaction");
+    assert_eq!(
+        crate::content::reaction(&message).as_deref(),
+        Some("\u{1F44D}")
+    );
+}
