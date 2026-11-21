@@ -13,6 +13,7 @@ pub struct Settings {
     pub notify: bool,
     pub preview: u8,
     pub trusted_images: Vec<String>,
+    pub undo_seconds: u8,
 }
 
 impl Default for Settings {
@@ -23,6 +24,7 @@ impl Default for Settings {
             notify: true,
             preview: 2,
             trusted_images: Vec::new(),
+            undo_seconds: 0,
         }
     }
 }
@@ -50,6 +52,10 @@ impl Settings {
             self.trusted_images.push(entry);
             self.trusted_images.sort();
         }
+    }
+
+    pub fn undo_delay(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.undo_seconds))
     }
 
     pub fn load() -> Settings {

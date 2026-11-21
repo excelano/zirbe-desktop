@@ -2,11 +2,13 @@
 // Built with AI assistance (Claude, Anthropic)
 
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
 
 use eframe::egui::{self, Frame, Margin, RichText, TextEdit, Ui};
 use zirbe_store::{Account, Draft, MailSource, Message, Original, Outgoing, Person, Reply};
 
 use crate::files;
+use crate::held::Held;
 use crate::palette::Palette;
 use crate::people;
 
@@ -28,7 +30,7 @@ pub struct Composer {
     forwarded: Option<(String, String)>,
     attachments: Vec<Outgoing>,
     picking: Option<Receiver<Vec<Outgoing>>>,
-    sending: Option<Reply>,
+    sending: Option<Held>,
     saving: Option<Reply>,
     failure: Option<String>,
     closing: bool,
@@ -159,10 +161,11 @@ impl Composer {
         accounts: &[Account],
         known: &[Person],
         palette: &Palette,
+        undo_delay: Duration,
     ) -> Outcome {
         let mut outcome = Outcome::Open;
-        if let Some(reply) = &self.sending
-            && let Some(result) = crate::app::arrived(reply, ui.ctx())
+        if let Some(held) = &mut self.sending
+            && let Some(result) = held.poll(mail, ui.ctx())
         {
             self.sending = None;
             match result {
@@ -346,7 +349,7 @@ impl Composer {
                         match self.draft_value() {
                             Ok(draft) => {
                                 self.failure = None;
-                                self.sending = Some(mail.send(draft));
+                                self.sending = Some(Held::new(draft, undo_delay, mail));
                             }
                             Err(error) => self.failure = Some(error),
                         }
@@ -354,7 +357,15 @@ impl Composer {
                     if ui.button("Cancel").clicked() && self.cancel() {
                         outcome = Outcome::Closed;
                     }
-                    if self.sending.is_some() || self.saving.is_some() {
+                    if let Some(left) = self.sending.as_ref().and_then(Held::waiting) {
+                        if ui
+                            .small_button(format!("Undo ({}s)", left.as_secs() + 1))
+                            .on_hover_text("Keep the message here instead of sending it")
+                            .clicked()
+                        {
+                            self.sending = None;
+                        }
+                    } else if self.sending.is_some() || self.saving.is_some() {
                         ui.spinner();
                     }
                 });

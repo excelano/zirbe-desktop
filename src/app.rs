@@ -24,6 +24,7 @@ use crate::dates;
 use crate::demo::Demo;
 use crate::files;
 use crate::filter::Filter;
+use crate::held::Held;
 use crate::link;
 use crate::list;
 use crate::media;
@@ -105,8 +106,7 @@ const UNDO: Duration = Duration::from_secs(5);
 
 struct Sending {
     conversation: String,
-    draft: Draft,
-    reply: Reply,
+    held: Held,
 }
 
 enum Unsubscribing {
@@ -465,21 +465,22 @@ impl App {
     }
 
     fn poll_sending(&mut self, ctx: &egui::Context) {
-        let Some(sending) = &self.sending else { return };
-        match sending.reply.try_recv() {
-            Ok(Ok(())) => {
+        let Some(sending) = &mut self.sending else {
+            return;
+        };
+        match sending.held.poll(self.source.mail(), ctx) {
+            None => {}
+            Some(Ok(())) => {
                 self.drafts.remove(&sending.conversation);
                 self.replying.remove(&sending.conversation);
                 self.retry = None;
                 self.sending = None;
             }
-            Ok(Err(error)) => {
+            Some(Err(error)) => {
                 self.failure = Some((sending.conversation.clone(), format!("Not sent. {error}")));
-                self.retry = Some((sending.conversation.clone(), sending.draft.clone()));
+                self.retry = Some((sending.conversation.clone(), sending.held.draft.clone()));
                 self.sending = None;
             }
-            Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
-            Err(TryRecvError::Disconnected) => self.sending = None,
         }
     }
 
@@ -2674,8 +2675,7 @@ impl App {
                 self.failure = None;
                 self.sending = Some(Sending {
                     conversation: key.clone(),
-                    reply: self.source.mail().send(draft.clone()),
-                    draft,
+                    held: Held::new(draft, Duration::ZERO, self.source.mail()),
                 });
             }
             ui.add_space(4.0);
@@ -2717,6 +2717,12 @@ impl App {
             .sending
             .as_ref()
             .is_some_and(|sending| sending.conversation == key);
+        let waiting = self
+            .sending
+            .as_ref()
+            .filter(|sending| sending.conversation == key)
+            .and_then(|sending| sending.held.waiting());
+        let mut unsend = false;
         let state = self.replying.entry(key.clone()).or_default();
         if let Some(picking) = &state.picking {
             match picking.try_recv() {
@@ -2864,7 +2870,12 @@ impl App {
                     if ui.add_enabled(ready, button).clicked() {
                         send = true;
                     }
-                    if sending {
+                    if let Some(left) = waiting {
+                        unsend = ui
+                            .small_button(format!("Undo ({}s)", left.as_secs() + 1))
+                            .on_hover_text("Keep the message here instead of sending it")
+                            .clicked();
+                    } else if sending {
                         ui.spinner();
                     }
                     record = ui
@@ -2895,6 +2906,9 @@ impl App {
                     .size(10.5)
                     .color(palette.secondary),
             );
+        }
+        if unsend {
+            self.sending = None;
         }
         let state = self.replying.entry(key.clone()).or_default();
         if pick && state.picking.is_none() {
@@ -2931,8 +2945,7 @@ impl App {
             self.retry = None;
             self.sending = Some(Sending {
                 conversation: key,
-                reply: self.source.mail().send(draft.clone()),
-                draft,
+                held: Held::new(draft, self.settings.undo_delay(), self.source.mail()),
             });
         }
     }
@@ -2952,7 +2965,14 @@ impl App {
         let Pane::New(composer) = &mut self.pane else {
             return;
         };
-        match composer.show(ui, self.source.mail(), &accounts, known, &palette) {
+        match composer.show(
+            ui,
+            self.source.mail(),
+            &accounts,
+            known,
+            &palette,
+            self.settings.undo_delay(),
+        ) {
             composer::Outcome::Open => {}
             composer::Outcome::Closed => self.pane = Pane::Conversation,
             composer::Outcome::Sent { subject } => {
@@ -3011,6 +3031,20 @@ impl App {
                     }
                 }
                 ui.checkbox(&mut settings.notify, "New mail notifications");
+                ui.horizontal(|ui| {
+                    ui.label("Undo send");
+                    let label = |seconds: u8| match seconds {
+                        0 => "Off".to_string(),
+                        seconds => format!("{seconds} seconds"),
+                    };
+                    egui::ComboBox::from_id_salt("undo send")
+                        .selected_text(label(settings.undo_seconds))
+                        .show_ui(ui, |ui| {
+                            for seconds in [0, 5, 10, 20] {
+                                ui.selectable_value(&mut settings.undo_seconds, seconds, label(seconds));
+                            }
+                        });
+                });
                 ui.horizontal(|ui| {
                     ui.label("Preview");
                     let names = ["None", "1 line", "2 lines", "3 lines"];

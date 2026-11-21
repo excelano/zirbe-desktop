@@ -56,7 +56,9 @@ Settings says whether transcription is installed and what to install if not. A n
 it has no subject, suggests addresses from the mail already synced and from the
 desktop's address book, offers the same people as a searchable list under
 Contacts, and can be saved to the server's Drafts folder instead of sent; opening a draft from the
-Drafts folder brings it back to finish. A message that cannot go out yet, with
+Drafts folder brings it back to finish. Undo send in Settings holds a message
+for a few seconds after Send, with an Undo that keeps it in the reply box. A
+message that cannot go out yet, with
 the computer offline or the server not answering, shows Waiting to send and goes
 at a later check for mail, even after Zirbe restarts; one the server refuses
 keeps a Retry button, and one refused while waiting is kept in Drafts. An
