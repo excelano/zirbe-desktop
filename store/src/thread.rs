@@ -6,6 +6,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::model::{Account, Conversation, Copy, List, Message, Person};
 use crate::subject;
 
+const ORPHAN_WINDOW_DAYS: i64 = 30;
+
 pub(crate) fn conversations(
     me: &Account,
     started: &BTreeSet<String>,
@@ -39,7 +41,12 @@ pub(crate) fn conversations(
         .flatten()
         .filter_map(|message| Some((message.message_id.clone()?, message.clone())))
         .collect();
-    let mut found: Vec<Conversation> = threads(me, started, rest)
+    let held: HashSet<String> = rest
+        .iter()
+        .chain(lists.values().flatten())
+        .filter_map(|message| message.message_id.clone())
+        .collect();
+    let mut found: Vec<Conversation> = join_orphans(threads(me, started, rest), &held)
         .into_iter()
         .map(|mut conversation| {
             if !conversation.starts_with_context
@@ -62,6 +69,60 @@ pub(crate) fn conversations(
         )
         .collect();
     found.sort_by(|a, b| b.latest().cmp(&a.latest()).then_with(|| a.key.cmp(&b.key)));
+    found
+}
+
+fn join_orphans(mut found: Vec<Conversation>, held: &HashSet<String>) -> Vec<Conversation> {
+    let people = |conversation: &Conversation| -> BTreeSet<String> {
+        conversation
+            .members
+            .iter()
+            .map(|person| person.address.to_lowercase())
+            .collect()
+    };
+    while let Some((orphan, target)) = (0..found.len()).find_map(|index| {
+        let orphan = &found[index];
+        let first = orphan.messages.first()?;
+        let name = subject::normalize(&first.subject);
+        let lost = !orphan.starts_with_context
+            && subject::is_reply(&first.subject)
+            && !name.is_empty()
+            && first
+                .in_reply_to
+                .iter()
+                .chain(&first.references)
+                .all(|id| !held.contains(id));
+        if !lost {
+            return None;
+        }
+        let since = first.date - chrono::Duration::days(ORPHAN_WINDOW_DAYS);
+        (0..found.len())
+            .filter(|&other| other != index)
+            .filter(|&other| found[other].title.eq_ignore_ascii_case(&name))
+            .filter(|&other| people(&found[other]) == people(orphan))
+            .filter_map(|other| {
+                let newest = found[other]
+                    .messages
+                    .iter()
+                    .map(|message| message.date)
+                    .filter(|date| *date >= since && *date <= first.date)
+                    .max()?;
+                Some((newest, other))
+            })
+            .max()
+            .map(|(_, other)| (index, other))
+    }) {
+        let joined = found.remove(orphan);
+        let target = if target > orphan { target - 1 } else { target };
+        let into = &mut found[target];
+        let skip = usize::from(into.starts_with_context);
+        into.messages.extend(joined.messages);
+        into.messages[skip..].sort_by_key(|message| message.date);
+        into.copies.extend(joined.copies);
+        into.unread += joined.unread;
+        into.flagged |= joined.flagged;
+        into.in_inbox |= joined.in_inbox;
+    }
     found
 }
 
@@ -787,5 +848,44 @@ pub(crate) mod tests {
         assert!(private.starts_with_context);
         assert_eq!(private.messages[0].message_id.as_deref(), Some("<a>"));
         assert_eq!(private.copies.len(), 1);
+    }
+
+    fn orphan(id: &str, from: &str, minute: u32, subject: &str) -> Message {
+        let mut message = message(id, &[], from, minute);
+        message.subject = subject.into();
+        message
+    }
+
+    #[test]
+    fn a_reply_that_lost_its_headers_joins_its_conversation() {
+        let start = message("a", &[], "ana@example.com", 1);
+        let answer = orphan("b", "ana@example.com", 5, "Re: Lunch");
+        let mut lost_parent = orphan("c", "ana@example.com", 6, "AW: Lunch");
+        lost_parent.references = vec!["<gone>".into()];
+        lost_parent.in_reply_to = Some("<gone>".into());
+        let found = conversations(
+            &account(),
+            &BTreeSet::new(),
+            vec![start, answer, lost_parent],
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].messages.len(), 3);
+        assert_eq!(found[0].copies.len(), 3);
+    }
+
+    #[test]
+    fn only_a_claimed_reply_among_the_same_people_soon_after_joins() {
+        let start = message("a", &[], "ana@example.com", 1);
+        let fresh = orphan("b", "ana@example.com", 5, "Lunch");
+        let forward = orphan("c", "ana@example.com", 6, "Fwd: Lunch");
+        let stranger = orphan("d", "ben@example.com", 7, "Re: Lunch");
+        let mut late = orphan("e", "ana@example.com", 8, "Re: Lunch");
+        late.date += chrono::Duration::days(31);
+        let found = conversations(
+            &account(),
+            &BTreeSet::new(),
+            vec![start, fresh, forward, stranger, late],
+        );
+        assert_eq!(found.len(), 5);
     }
 }
