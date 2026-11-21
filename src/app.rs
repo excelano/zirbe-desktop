@@ -109,6 +109,22 @@ struct Sending {
     reply: Reply,
 }
 
+enum Unsubscribing {
+    Reading {
+        conversation: String,
+        account: String,
+        reply: Reply<zirbe_store::Original>,
+    },
+    Asking {
+        conversation: String,
+        draft: Box<Draft>,
+    },
+    Sending {
+        conversation: String,
+        reply: Reply,
+    },
+}
+
 struct Fetching {
     conversation: String,
     work: Work,
@@ -297,6 +313,7 @@ pub struct App {
     reauth: HashMap<String, (String, Option<Reply>, Option<String>)>,
     confirm_block: Option<(String, Person)>,
     confirm_link: Option<link::Check>,
+    unsubscribing: Option<Unsubscribing>,
     thumbs: HashMap<String, bubbles::Thumb>,
     thumb_loads: Vec<(String, Option<String>, Reply<Vec<u8>>)>,
     audio: Audio,
@@ -356,6 +373,7 @@ impl App {
             reauth: HashMap::new(),
             confirm_block: None,
             confirm_link: None,
+            unsubscribing: None,
             thumbs: HashMap::new(),
             thumb_loads: Vec::new(),
             audio: Audio::default(),
@@ -1384,6 +1402,7 @@ impl App {
             || self.confirm_delete.is_some()
             || self.confirm_block.is_some()
             || self.confirm_link.is_some()
+            || matches!(self.unsubscribing, Some(Unsubscribing::Asking { .. }))
             || self.confirm_empty.is_some()
             || self.confirm_sweep.is_some()
         {
@@ -1505,6 +1524,112 @@ impl App {
             }
             None => {}
         }
+    }
+
+    fn unsubscribe_step(&mut self, ctx: &egui::Context) {
+        let Some(step) = self.unsubscribing.take() else {
+            return;
+        };
+        self.unsubscribing = match step {
+            Unsubscribing::Reading {
+                conversation,
+                account,
+                reply,
+            } => match arrived(&reply, ctx) {
+                None => Some(Unsubscribing::Reading {
+                    conversation,
+                    account,
+                    reply,
+                }),
+                Some(Ok(original)) => {
+                    let by_mail = original
+                        .unsubscribe
+                        .iter()
+                        .find_map(|address| link::mailto(address));
+                    let on_web = original.unsubscribe.iter().find(|address| {
+                        let address = address.to_ascii_lowercase();
+                        address.starts_with("https:") || address.starts_with("http:")
+                    });
+                    if let Some(asked) = by_mail {
+                        Some(Unsubscribing::Asking {
+                            conversation,
+                            draft: Box::new(Draft {
+                                account,
+                                to: asked
+                                    .to
+                                    .into_iter()
+                                    .map(|address| Person {
+                                        name: None,
+                                        address,
+                                    })
+                                    .collect(),
+                                subject: asked.subject,
+                                body: asked.body,
+                                ..Draft::default()
+                            }),
+                        })
+                    } else {
+                        match on_web {
+                            Some(address) => self.follow(address, "", true),
+                            None => {
+                                self.failure = Some((
+                                    conversation,
+                                    "This list gives no way to unsubscribe.".into(),
+                                ));
+                            }
+                        }
+                        None
+                    }
+                }
+                Some(Err(error)) => {
+                    self.failure = Some((conversation, format!("Could not unsubscribe: {error}")));
+                    None
+                }
+            },
+            Unsubscribing::Asking {
+                conversation,
+                draft,
+            } => {
+                let to: Vec<&str> = draft
+                    .to
+                    .iter()
+                    .map(|person| person.address.as_str())
+                    .collect();
+                let text = format!(
+                    "Send an unsubscribe request to {} from {}? It goes out through your own mail server like any message.",
+                    to.join(", "),
+                    draft.account
+                );
+                match ask(ctx, "Unsubscribe", &text, "Send") {
+                    Some(true) => Some(Unsubscribing::Sending {
+                        conversation,
+                        reply: self.source.mail().send(*draft),
+                    }),
+                    Some(false) => None,
+                    None => Some(Unsubscribing::Asking {
+                        conversation,
+                        draft,
+                    }),
+                }
+            }
+            Unsubscribing::Sending {
+                conversation,
+                reply,
+            } => match arrived(&reply, ctx) {
+                None => Some(Unsubscribing::Sending {
+                    conversation,
+                    reply,
+                }),
+                Some(Ok(())) => None,
+                Some(Err(error)) => {
+                    self.failure = Some((
+                        conversation,
+                        format!("The unsubscribe request was not sent: {error}"),
+                    ));
+                    None
+                }
+            },
+        };
     }
 
     fn link_window(&mut self, ctx: &egui::Context) {
@@ -1874,6 +1999,7 @@ impl App {
                 let mut find = false;
                 let mut block = None;
                 let mut sweep = None;
+                let mut unsubscribe = None;
                 ui.scope_builder(
                     UiBuilder::new()
                         .max_rect(Rect::from_min_max(
@@ -1906,6 +2032,16 @@ impl App {
                                     sweep = Some(sender.clone());
                                     ui.close();
                                 }
+                            }
+                            if let Some(listed) = conversation
+                                .messages
+                                .iter()
+                                .rev()
+                                .find(|message| message.list && message.uid != 0)
+                                && ui.button("Unsubscribe…").clicked()
+                            {
+                                unsubscribe = Some(listed.clone());
+                                ui.close();
                             }
                             ui.separator();
                             chosen = self.actions_menu(ui, std::slice::from_ref(&conversation));
@@ -1955,6 +2091,13 @@ impl App {
                 }
                 if let Some(sender) = block {
                     self.confirm_block = Some((conversation.account.clone(), sender));
+                }
+                if let Some(message) = unsubscribe {
+                    self.unsubscribing = Some(Unsubscribing::Reading {
+                        conversation: conversation.key.clone(),
+                        account: conversation.account.clone(),
+                        reply: self.source.mail().original(&conversation.account, &message),
+                    });
                 }
                 ui.vertical_centered(|ui| {
                     ui.set_max_width((full.width() - 2.0 * actions).max(120.0));
@@ -3117,6 +3260,7 @@ impl eframe::App for App {
         self.confirm_window(&ctx);
         self.block_window(&ctx);
         self.link_window(&ctx);
+        self.unsubscribe_step(&ctx);
         self.empty_window(&ctx);
         self.sweep_window(&ctx);
     }

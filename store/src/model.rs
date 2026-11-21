@@ -288,6 +288,7 @@ pub struct Draft {
 pub struct Original {
     pub text: String,
     pub attachments: Vec<Outgoing>,
+    pub unsubscribe: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

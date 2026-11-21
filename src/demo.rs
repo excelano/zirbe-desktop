@@ -543,6 +543,7 @@ impl MailSource for Demo {
                 message.text
             ),
             attachments: Vec::new(),
+            unsubscribe: Vec::new(),
         }));
         receiver
     }

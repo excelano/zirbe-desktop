@@ -75,7 +75,10 @@ show none to three lines of each conversation's latest message. Block, in a
 conversation's menu, moves that sender's mail to Junk now and at every check
 for mail after, until the sender is unblocked in Settings; Trash All from the
 same menu moves every conversation in the folder shown whose mail comes only
-from that sender to Trash. If the copy of a sent message cannot be
+from that sender to Trash. Unsubscribe, in the menu of a conversation from a
+mailing list, sends the list's unsubscribe request through your own mail
+server after asking, or opens the list's unsubscribe page in your browser when
+that is all it offers. If the copy of a sent message cannot be
 saved to the server's Sent folder, the status line says so and Zirbe keeps
 trying at every check for mail. Mail you sent
 is read from the account's Sent folder and sits on the right, so a thread reads

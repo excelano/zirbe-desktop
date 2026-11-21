@@ -125,9 +125,49 @@ fn parameter(url: &Url, name: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
+pub struct Mailto {
+    pub to: Vec<String>,
+    pub subject: String,
+    pub body: String,
+}
+
+pub fn mailto(address: &str) -> Option<Mailto> {
+    let url = Url::parse(address.trim()).ok()?;
+    if url.scheme() != "mailto" {
+        return None;
+    }
+    let to: Vec<String> = percent_encoding::percent_decode_str(url.path())
+        .decode_utf8_lossy()
+        .split(',')
+        .map(str::trim)
+        .filter(|address| address.contains('@'))
+        .map(str::to_string)
+        .collect();
+    if to.is_empty() {
+        return None;
+    }
+    let field = |name: &str| parameter(&url, name).filter(|value| !value.trim().is_empty());
+    Some(Mailto {
+        to,
+        subject: field("subject").unwrap_or_else(|| "unsubscribe".into()),
+        body: field("body").unwrap_or_else(|| "unsubscribe".into()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::check;
+    use super::{check, mailto};
+
+    #[test]
+    fn reads_a_mailto_address_with_its_subject() {
+        let asked =
+            mailto("mailto:leave%2Bnews@example.com?subject=Remove%20me").expect("a mailto");
+        assert_eq!(asked.to, ["leave+news@example.com"]);
+        assert_eq!(asked.subject, "Remove me");
+        assert_eq!(asked.body, "unsubscribe");
+        assert!(mailto("https://example.com/u").is_none());
+        assert!(mailto("mailto:?subject=x").is_none());
+    }
 
     #[test]
     fn an_ordinary_link_carries_no_warning() {

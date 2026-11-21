@@ -120,7 +120,22 @@ pub(crate) fn original(raw: &[u8]) -> Option<Original> {
                 bytes: part.decoded().into_owned(),
             })
             .collect(),
+        unsubscribe: message
+            .headers()
+            .get("List-Unsubscribe")
+            .map(|header| unsubscribe_links(&String::from_utf8_lossy(header.raw_value())))
+            .unwrap_or_default(),
     })
+}
+
+fn unsubscribe_links(value: &str) -> Vec<String> {
+    value
+        .split('<')
+        .skip(1)
+        .filter_map(|rest| rest.split_once('>'))
+        .map(|(link, _)| link.split_whitespace().collect::<String>())
+        .filter(|link| !link.is_empty())
+        .collect()
 }
 
 fn from_html(html: &str) -> String {
@@ -252,6 +267,19 @@ mod tests {
         assert!(!folds_quote("Done.\n-- \nAna Lopez\nExcelano"));
         assert!(!folds_quote("> only a quote"));
         assert!(!folds_quote("> Lunch?\nYes, noon.\n> Where?\nThe usual."));
+    }
+
+    #[test]
+    fn reads_a_lists_unsubscribe_addresses() {
+        let raw = b"From: news@example.com\r\nList-Unsubscribe: <mailto:leave@example.com?subject=stop>,\r\n <https://example.com/u/\r\n 42>\r\nSubject: News\r\n\r\nHello";
+        let original = super::original(raw).expect("a message");
+        assert_eq!(
+            original.unsubscribe,
+            [
+                "mailto:leave@example.com?subject=stop",
+                "https://example.com/u/42"
+            ]
+        );
     }
 
     #[test]

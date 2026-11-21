@@ -6981,6 +6981,7 @@ dependencies = [
  "idna",
  "image",
  "open",
+ "percent-encoding",
  "png",
  "rfd",
  "rodio",
