@@ -6978,6 +6978,7 @@ dependencies = [
  "dirs",
  "eframe",
  "fontique 0.12.0",
+ "idna",
  "image",
  "open",
  "png",

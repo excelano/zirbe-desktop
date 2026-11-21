@@ -45,7 +45,12 @@ struct Rendered {
 
 enum Reply {
     Rendered(Rendered),
-    Link { href: Option<String>, click: bool },
+    Link { link: Option<Link>, click: bool },
+}
+
+pub struct Link {
+    pub href: String,
+    pub text: String,
 }
 
 pub struct Page {
@@ -56,6 +61,7 @@ pub struct Page {
     asked: Option<(u32, f32)>,
     height: f32,
     hovered: Option<String>,
+    clicked: Option<Link>,
     pointer: Option<egui::Pos2>,
 }
 
@@ -76,8 +82,13 @@ impl Page {
             asked: None,
             height: 0.0,
             hovered: None,
+            clicked: None,
             pointer: None,
         }
+    }
+
+    pub fn take_click(&mut self) -> Option<Link> {
+        self.clicked.take()
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
@@ -105,13 +116,11 @@ impl Page {
                         .collect();
                     self.shown = Some((rendered.width, rendered.scale));
                 }
-                Ok(Reply::Link { href, click }) => {
+                Ok(Reply::Link { link, click }) => {
                     if click {
-                        if let Some(href) = &href {
-                            let _ = open::that_detached(href);
-                        }
+                        self.clicked = link;
                     } else {
-                        self.hovered = href;
+                        self.hovered = link.map(|link| link.href);
                     }
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
@@ -213,8 +222,8 @@ impl Renderer {
                     Command::Render { width, scale } => render = Some((width, scale)),
                     Command::Loaded => loaded = true,
                     Command::Point { x, y, click } => {
-                        let href = self.link_at(x, y);
-                        if self.outbox.send(Reply::Link { href, click }).is_err() {
+                        let link = self.link_at(x, y);
+                        if self.outbox.send(Reply::Link { link, click }).is_err() {
                             return;
                         }
                     }
@@ -289,7 +298,7 @@ impl Renderer {
         }
     }
 
-    fn link_at(&self, x: f32, y: f32) -> Option<String> {
+    fn link_at(&self, x: f32, y: f32) -> Option<Link> {
         let document = self.document.as_ref()?;
         let (x, y) = (f64::from(x), f64::from(y));
         document
@@ -307,7 +316,13 @@ impl Renderer {
                         && y < area.y + area.height
                 })
             })
-            .map(|(_, href)| href)
+            .map(|(id, href)| Link {
+                href,
+                text: document
+                    .get_node(id)
+                    .map(|node| node.text_content())
+                    .unwrap_or_default(),
+            })
     }
 }
 
@@ -526,10 +541,10 @@ mod tests {
              style=\"display:inline-block;padding:14px 36px;line-height:20px\">Sign in</a></div>",
         );
         assert_eq!(
-            button.link_at(110.0, 45.0).as_deref(),
+            button.link_at(110.0, 45.0).map(|link| link.href).as_deref(),
             Some("https://x.test/button")
         );
-        assert_eq!(button.link_at(250.0, 84.0), None);
+        assert!(button.link_at(250.0, 84.0).is_none());
 
         let column = link_finder(
             "<div style=\"padding-top:40px;font-size:0\"><div style=\"display:inline-block; \
@@ -537,11 +552,11 @@ mod tests {
              <a href=\"javascript:go()\">Script</a></div></div>",
         );
         assert_eq!(
-            column.link_at(10.0, 50.0).as_deref(),
-            Some("https://x.test/text")
+            column.link_at(10.0, 50.0).map(|link| link.text).as_deref(),
+            Some("Support")
         );
-        assert_eq!(column.link_at(10.0, 20.0), None);
-        assert_eq!(column.link_at(100.0, 50.0), None);
+        assert!(column.link_at(10.0, 20.0).is_none());
+        assert!(column.link_at(100.0, 50.0).is_none());
     }
 
     #[test]

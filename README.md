@@ -134,8 +134,11 @@ drawn by Zirbe itself with nothing loaded from the network; pictures the sender
 embedded in the message still show. Show Images loads the sender's linked
 pictures too, which can tell the sender you opened the message and roughly
 where you are. Settings can open HTML email in Web View and load its pictures
-without being asked; both are off until you turn them on. Links open in your
-browser. Apart from those images, the only connections are to your own IMAP and
+without being asked; both are off until you turn them on. A link in Web View
+opens in your browser after a dialog shows the site it really goes to, warns
+when the link's text names a different site or the address is numeric or
+written in look-alike letters, and offers the address without its tracking
+parameters. Apart from those images, the only connections are to your own IMAP and
 SMTP servers. The microphone is open only while a voice message is recording,
 and transcription runs on this computer, so a recording and its transcript go
 nowhere but into the message. [SECURITY.md](SECURITY.md#what-zirbe-can-access) says what else

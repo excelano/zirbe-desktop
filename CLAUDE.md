@@ -51,7 +51,8 @@ and the launcher's unread count over the session bus, `signin.rs` the account fo
 are audio or video and a video's first frame through ffmpeg, `voice.rs`
 recording a voice message and preparing it to send, `transcribe.rs` running
 whisper-cli under the calling contract in excelano/whisper.cpp-model-small's
-README, `demo.rs` the sample conversations behind `--demo`, and `page.rs` the Email
+README, `demo.rs` the sample conversations behind `--demo`, `link.rs` what a link's
+dialog shows before it opens (its real host, warnings, an address without tracking), and `page.rs` the Email
 View: Blitz (`blitz-html`, pinned to an exact beta) lays out and paints a
 message's HTML on its own thread into tiles the reading pane draws, and its
 `NetProvider` is the only way the page reaches anything outside the message.

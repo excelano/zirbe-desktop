@@ -24,6 +24,7 @@ use crate::dates;
 use crate::demo::Demo;
 use crate::files;
 use crate::filter::Filter;
+use crate::link;
 use crate::list;
 use crate::media;
 use crate::notify::Notifier;
@@ -295,6 +296,7 @@ pub struct App {
     aliases: HashMap<String, String>,
     reauth: HashMap<String, (String, Option<Reply>, Option<String>)>,
     confirm_block: Option<(String, Person)>,
+    confirm_link: Option<link::Check>,
     thumbs: HashMap<String, bubbles::Thumb>,
     thumb_loads: Vec<(String, Option<String>, Reply<Vec<u8>>)>,
     audio: Audio,
@@ -353,6 +355,7 @@ impl App {
             aliases: HashMap::new(),
             reauth: HashMap::new(),
             confirm_block: None,
+            confirm_link: None,
             thumbs: HashMap::new(),
             thumb_loads: Vec::new(),
             audio: Audio::default(),
@@ -436,6 +439,7 @@ impl App {
             self.pane = Pane::Conversation;
         }
         if self.reading.is_some()
+            && self.confirm_link.is_none()
             && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
         {
             self.reading = None;
@@ -1379,6 +1383,7 @@ impl App {
             || !matches!(self.pane, Pane::Conversation)
             || self.confirm_delete.is_some()
             || self.confirm_block.is_some()
+            || self.confirm_link.is_some()
             || self.confirm_empty.is_some()
             || self.confirm_sweep.is_some()
         {
@@ -1483,6 +1488,78 @@ impl App {
             }
             Some(false) => self.confirm_sweep = None,
             None => {}
+        }
+    }
+
+    fn follow(&mut self, href: &str, text: &str, always_ask: bool) {
+        if href.trim().to_ascii_lowercase().starts_with("mailto:") {
+            let _ = open::that_detached(href.trim());
+            return;
+        }
+        match link::check(href, text) {
+            Some(checked) if always_ask || !checked.warnings.is_empty() => {
+                self.confirm_link = Some(checked);
+            }
+            Some(checked) => {
+                let _ = open::that_detached(&checked.address);
+            }
+            None => {}
+        }
+    }
+
+    fn link_window(&mut self, ctx: &egui::Context) {
+        let Some(checked) = &self.confirm_link else {
+            return;
+        };
+        let palette = self.palette;
+        let mut open = None;
+        let mut close = false;
+        egui::Window::new("Open Link")
+            .collapsible(false)
+            .resizable(false)
+            .min_width(460.0)
+            .max_width(460.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(RichText::new(&checked.host).size(17.0).strong());
+                for warning in &checked.warnings {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(format!("⚠ {warning}")).color(palette.failure));
+                }
+                ui.add_space(6.0);
+                let shown: String = checked.address.chars().take(300).collect();
+                ui.label(RichText::new(shown).size(12.0).color(palette.secondary));
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Open").clicked() {
+                        open = Some(checked.address.clone());
+                    }
+                    if let Some(cleaned) = &checked.cleaned
+                        && ui
+                            .button("Open Without Tracking")
+                            .on_hover_text(cleaned)
+                            .clicked()
+                    {
+                        open = Some(cleaned.clone());
+                    }
+                    if ui.button("Copy Address").clicked() {
+                        ui.ctx().copy_text(checked.address.clone());
+                        close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
+            close = true;
+        }
+        if let Some(address) = open {
+            let _ = open::that_detached(&address);
+            close = true;
+        }
+        if close {
+            self.confirm_link = None;
         }
     }
 
@@ -2044,9 +2121,7 @@ impl App {
                                 at: std::time::Instant::now(),
                             });
                         }
-                        Choice::Join(link) => {
-                            let _ = open::that_detached(link);
-                        }
+                        Choice::Join(address) => self.follow(&address, "", false),
                         Choice::AddToCalendar => {
                             if let Some(invite) = &message.invite
                                 && let Err(error) =
@@ -2131,6 +2206,7 @@ impl App {
         }
         let mut close = false;
         let mut toggle = false;
+        let mut clicked = None;
         let mut choice = None;
         Frame::new()
             .inner_margin(Margin::symmetric(16, 8))
@@ -2200,6 +2276,7 @@ impl App {
                     .id_salt(("email", &reading.conversation, reading.message.uid))
                     .auto_shrink(false)
                     .show(ui, |ui| page.show(ui));
+                clicked = page.take_click();
             }
         }
         if toggle {
@@ -2213,6 +2290,9 @@ impl App {
             let account = reading.account.clone();
             let conversation = reading.conversation.clone();
             self.attachment(&conversation, &account, &message, choice);
+        }
+        if let Some(clicked) = clicked {
+            self.follow(&clicked.href, &clicked.text, true);
         }
         if close {
             self.reading = None;
@@ -3036,6 +3116,7 @@ impl eframe::App for App {
         self.settings_window(&ctx);
         self.confirm_window(&ctx);
         self.block_window(&ctx);
+        self.link_window(&ctx);
         self.empty_window(&ctx);
         self.sweep_window(&ctx);
     }

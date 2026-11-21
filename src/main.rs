@@ -13,6 +13,7 @@ mod dates;
 mod demo;
 mod files;
 mod filter;
+mod link;
 mod list;
 mod media;
 mod notify;
