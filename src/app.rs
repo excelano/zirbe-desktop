@@ -325,7 +325,7 @@ pub struct App {
     auto_opened: Option<String>,
     adding_account: bool,
     sign_in: SignIn,
-    marked: Option<(String, usize)>,
+    marked: (String, HashSet<(String, u32)>),
     #[cfg(feature = "screenshot")]
     screenshot: Option<crate::screenshot::Screenshot>,
     #[cfg(feature = "screenshot")]
@@ -385,7 +385,7 @@ impl App {
             auto_opened: None,
             adding_account: false,
             sign_in: SignIn::default(),
-            marked: None,
+            marked: (String::new(), HashSet::new()),
             #[cfg(feature = "screenshot")]
             screenshot: crate::screenshot::Screenshot::from_environment(),
             #[cfg(feature = "screenshot")]
@@ -1511,6 +1511,33 @@ impl App {
         }
     }
 
+    fn mark_seen(&mut self, conversation: &Conversation, seen: Vec<Message>) {
+        if self.marked.0 != conversation.key {
+            self.marked = (conversation.key.clone(), HashSet::new());
+        }
+        let fresh: Vec<(String, u32)> = seen
+            .iter()
+            .map(|message| (message.mailbox.clone(), message.uid))
+            .filter(|place| place.1 != 0 && !self.marked.1.contains(place))
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+        let ids: HashSet<&str> = seen
+            .iter()
+            .filter_map(|message| message.message_id.as_deref())
+            .collect();
+        let mut part = conversation.clone();
+        part.copies.retain(|copy| {
+            copy.message_id.as_deref().map_or_else(
+                || fresh.contains(&(copy.mailbox.clone(), copy.uid)),
+                |id| ids.contains(id),
+            )
+        });
+        self.marked.1.extend(fresh);
+        self.source.mail().mark_read(&part);
+    }
+
     fn follow(&mut self, href: &str, text: &str, always_ask: bool) {
         if href.trim().to_ascii_lowercase().starts_with("mailto:") {
             let _ = open::that_detached(href.trim());
@@ -1976,15 +2003,9 @@ impl App {
                 });
             return;
         }
-        if conversation.unread > 0
-            && ui
-                .ctx()
-                .input(|input| input.viewport().focused.unwrap_or(true))
-            && self.marked.as_ref() != Some(&(conversation.key.clone(), conversation.unread))
-        {
-            self.marked = Some((conversation.key.clone(), conversation.unread));
-            self.source.mail().mark_read(&conversation);
-        }
+        let focused = ui
+            .ctx()
+            .input(|input| input.viewport().focused.unwrap_or(true));
         let account = self.account(&conversation.account);
 
         egui::Panel::top("conversation header")
@@ -2190,6 +2211,14 @@ impl App {
                     ..Account::default()
                 });
                 let wanted = std::cell::RefCell::new(Vec::new());
+                let seen = std::cell::RefCell::new(
+                    conversation
+                        .messages
+                        .iter()
+                        .filter(|message| !message.seen && message.reaction.is_some())
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                );
                 let action = ScrollArea::vertical()
                     .id_salt(&conversation.key)
                     .stick_to_bottom(true)
@@ -2209,6 +2238,7 @@ impl App {
                                     expanded: &self.expanded,
                                     thumbs: &self.thumbs,
                                     wanted: &wanted,
+                                    seen: &seen,
                                     pending: self
                                         .reacting
                                         .as_ref()
@@ -2238,6 +2268,9 @@ impl App {
                     })
                     .inner;
                 self.listen(&conversation, &me);
+                if focused {
+                    self.mark_seen(&conversation, seen.into_inner());
+                }
                 for (message, index) in wanted.into_inner() {
                     let key = bubbles::thumb_key(&message, index);
                     if !self.thumbs.contains_key(&key) {

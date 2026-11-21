@@ -31,6 +31,7 @@ const CHIP_GAP: f32 = 4.0;
 const CONTROLS: f32 = 20.0;
 const CONTROL_GAP: f32 = 12.0;
 pub const WEB_VIEW: &str = "🌐 Web View";
+const SEEN_HEIGHT: f32 = 48.0;
 pub const SHOW_IMAGES: &str = "👁 Show Images";
 const SHOW_QUOTED: &str = "Show quoted text";
 const HIDE_QUOTED: &str = "Hide quoted text";
@@ -83,6 +84,7 @@ pub struct View<'a> {
     pub expanded: &'a HashMap<String, String>,
     pub thumbs: &'a HashMap<String, Thumb>,
     pub wanted: &'a RefCell<Vec<(Message, usize)>>,
+    pub seen: &'a RefCell<Vec<Message>>,
     pub pending: Option<(&'a str, &'a str)>,
     pub clock: Clock,
     pub found: &'a [usize],
@@ -296,6 +298,12 @@ pub fn show(
             (!mine).then_some(!same_sender || !group),
             mark,
         );
+        if !message.seen
+            && !mine
+            && ui.clip_rect().intersect(shape).height() >= shape.height().min(SEEN_HEIGHT)
+        {
+            view.seen.borrow_mut().push(message.clone());
+        }
         if let Some(emojis) = message.message_id.as_ref().and_then(|id| reactions.get(id)) {
             badge(ui, shape, mine, emojis, palette);
         }

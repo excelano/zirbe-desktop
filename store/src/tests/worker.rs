@@ -569,3 +569,29 @@ fn a_sync_that_changes_nothing_leaves_the_cache_file_alone() {
     harness.settle();
     assert_ne!(written(&file), before);
 }
+
+#[test]
+fn marking_part_of_a_conversation_read_leaves_the_rest_unread() {
+    let harness = signed_in(|fake| {
+        fake.deliver(INBOX, &mail("a", "ana@example.org", "Lunch", 1, None));
+        fake.deliver(
+            INBOX,
+            &mail("b", "ana@example.org", "Re: Lunch", 2, Some("a")),
+        );
+    });
+    let mut lunch = harness
+        .held(&Scope::AllInboxes)
+        .into_iter()
+        .find(|c| c.title == "Lunch")
+        .expect("the lunch conversation");
+    assert_eq!(lunch.unread, 2);
+    lunch
+        .copies
+        .retain(|copy| copy.message_id.as_deref() == Some("<a@example.org>"));
+    harness.store.mark_read(&lunch);
+    harness.settle();
+    let state = harness.server.state();
+    let inbox = &state.folders[INBOX].messages;
+    assert!(inbox[&1].seen);
+    assert!(!inbox[&2].seen);
+}
