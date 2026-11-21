@@ -1,3 +1,15 @@
+zirbe (0.13.0) unstable; urgency=medium
+
+  * Buttons and links in an email's Web View open where they are drawn
+  * A link in Web View shows the site it really goes to before it opens, warns about mismatched, numeric or look-alike addresses, and can open without its tracking
+  * Tracking pixels stay blocked after Show Images
+  * Unsubscribe from a mailing list from its conversation's menu
+  * A sent message is no longer saved to Sent twice on servers that file it themselves, and the message you answered is marked answered
+  * Checking for mail costs less when nothing has changed
+  * Cached mail stays when a server's listing comes back incomplete, and reconnecting waits longer while a server stays unreachable
+
+ -- David M. Anderson <david.anderson@excelano.com>  Sat, 21 Nov 2026 16:44:15 -0600
+
 zirbe (0.12.0) unstable; urgency=medium
 
   * Text selected in a message shows clearly, in your own messages too
