@@ -1,3 +1,9 @@
+zirbe (0.15.0) unstable; urgency=medium
+
+  * Checking for mail no longer rewrites Zirbe's cache when nothing has changed, sparing the disk several gigabytes of writes a day
+
+ -- David M. Anderson <david.anderson@excelano.com>  Sat, 21 Nov 2026 17:38:03 -0600
+
 zirbe (0.14.0) unstable; urgency=medium
 
   * Reactions are standard email reactions (RFC 9078), shown by mail programs that support them, such as Delta Chat, and read from them
