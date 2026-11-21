@@ -1,3 +1,14 @@
+zirbe (0.14.0) unstable; urgency=medium
+
+  * Reactions are standard email reactions (RFC 9078), shown by mail programs that support them, such as Delta Chat, and read from them
+  * Each mailing list reads as one conversation named for the list, where a reply goes to the list and a reaction only to the author
+  * A reply whose mail program dropped the threading headers joins its conversation
+  * A message that cannot go out yet waits as Waiting to send and goes later, even after a restart
+  * An archive, move, delete or flag that does not reach the server is tried again, and a trashed conversation no longer comes back
+  * Cached mail is read again once after updating, to learn each message's mailing list; voice transcripts are kept
+
+ -- David M. Anderson <david.anderson@excelano.com>  Sat, 21 Nov 2026 17:28:48 -0600
+
 zirbe (0.13.0) unstable; urgency=medium
 
   * Buttons and links in an email's Web View open where they are drawn
