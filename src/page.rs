@@ -11,7 +11,9 @@ use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use blitz_dom::{Attribute, BaseDocument, DocumentConfig, QualName, local_name, ns};
+use blitz_dom::{
+    Attribute, BaseDocument, BoundingRect, DocumentConfig, NodeId, QualName, local_name, ns,
+};
 use blitz_html::HtmlDocument;
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request};
 use blitz_traits::shell::{ColorScheme, Viewport};
@@ -288,22 +290,50 @@ impl Renderer {
 
     fn link_at(&self, x: f32, y: f32) -> Option<String> {
         let document = self.document.as_ref()?;
-        let mut id = document.hit(x, y)?.node_id;
-        loop {
-            let node = document.get_node(id)?;
-            if node.data.is_element_with_tag_name(&local_name!("a"))
-                && let Some(href) = node.data.attr(local_name!("href"))
-            {
-                let href = href.trim();
-                return ["https:", "http:", "mailto:"]
-                    .iter()
-                    .any(|scheme| {
-                        href.len() > scheme.len()
-                            && href[..scheme.len()].eq_ignore_ascii_case(scheme)
-                    })
-                    .then(|| href.to_string());
-            }
-            id = node.parent?;
+        let (x, y) = (f64::from(x), f64::from(y));
+        document
+            .tree()
+            .iter()
+            .filter(|(_, node)| node.data.is_element_with_tag_name(&local_name!("a")))
+            .filter_map(|(id, node)| Some((id, followable(node.data.attr(local_name!("href"))?)?)))
+            .find(|(id, _)| {
+                let mut areas = Vec::new();
+                link_areas(document, *id, &mut areas);
+                areas.iter().any(|area| {
+                    x >= area.x
+                        && x < area.x + area.width
+                        && y >= area.y
+                        && y < area.y + area.height
+                })
+            })
+            .map(|(_, href)| href)
+    }
+}
+
+fn followable(href: &str) -> Option<String> {
+    let href = href.trim();
+    ["https:", "http:", "mailto:"]
+        .iter()
+        .any(|scheme| {
+            href.len() > scheme.len() && href[..scheme.len()].eq_ignore_ascii_case(scheme)
+        })
+        .then(|| href.to_string())
+}
+
+fn link_areas(document: &BaseDocument, id: NodeId, areas: &mut Vec<BoundingRect>) {
+    match document.inline_fragment_rects(id) {
+        Some(fragments) => areas.extend(fragments),
+        None => areas.extend(document.get_client_bounding_rect(id)),
+    }
+    let Some(node) = document.get_node(id) else {
+        return;
+    };
+    for &child in &node.children {
+        if document
+            .get_node(child)
+            .is_some_and(|child| child.data.downcast_element().is_some())
+        {
+            link_areas(document, child, areas);
         }
     }
 }
@@ -432,7 +462,17 @@ fn fetch_image(url: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{data_url, remote};
+    use super::{Renderer, data_url, remote};
+    use std::sync::mpsc;
+
+    fn link_finder(body: &str) -> Renderer {
+        let html = format!("<html><body style=\"margin:0\">{body}</body></html>");
+        let (wake, _) = mpsc::channel();
+        let (outbox, _) = mpsc::channel();
+        let mut renderer = Renderer::new(html, false, wake, outbox);
+        renderer.render(800, 1.0);
+        renderer
+    }
 
     #[test]
     fn reads_data_urls_and_tells_remote_sources_apart() {
@@ -442,5 +482,30 @@ mod tests {
         assert!(remote("//tracker.example/p.gif"));
         assert!(!remote("data:image/png;base64,aGk="));
         assert!(!remote(""));
+    }
+
+    #[test]
+    fn finds_a_link_where_it_is_painted() {
+        let button = link_finder(
+            "<div style=\"padding:40px 0 0 100px\"><a href=\"https://x.test/button\" \
+             style=\"display:inline-block;padding:14px 36px;line-height:20px\">Sign in</a></div>",
+        );
+        assert_eq!(
+            button.link_at(110.0, 45.0).as_deref(),
+            Some("https://x.test/button")
+        );
+        assert_eq!(button.link_at(250.0, 84.0), None);
+
+        let column = link_finder(
+            "<div style=\"padding-top:40px;font-size:0\"><div style=\"display:inline-block; \
+             font-size:16px;width:300px\"><a href=\"https://x.test/text\">Support</a> \
+             <a href=\"javascript:go()\">Script</a></div></div>",
+        );
+        assert_eq!(
+            column.link_at(10.0, 50.0).as_deref(),
+            Some("https://x.test/text")
+        );
+        assert_eq!(column.link_at(10.0, 20.0), None);
+        assert_eq!(column.link_at(100.0, 50.0), None);
     }
 }
