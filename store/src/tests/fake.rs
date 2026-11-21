@@ -64,6 +64,7 @@ pub(crate) struct State {
     pub log: Vec<String>,
     pub sent: Vec<Vec<u8>>,
     pub failing: BTreeSet<&'static str>,
+    pub files_sent: bool,
     pub keyring: BTreeMap<String, String>,
 }
 
@@ -204,6 +205,9 @@ impl Server for Fake {
         let mut state = self.state();
         state.attempt("send", "send".into())?;
         state.sent.push(message.formatted());
+        if state.files_sent {
+            state.folder(SENT)?.add(message.formatted(), true);
+        }
         Ok(())
     }
 }

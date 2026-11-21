@@ -311,8 +311,8 @@ fn live_a_message_sent_to_yourself_lands_in_sent_and_the_inbox() {
         .recv_timeout(super::harness::WAIT)
         .expect("a send reply")
         .expect("a sent message");
-    live.harness.settle();
-    assert_eq!(live.found(&live.role(Role::Sent)).len(), 1);
+    let sent = live.role(Role::Sent);
+    live.eventually("the copy to reach Sent", || live.found(&sent).len() == 1);
     live.eventually("the message to reach the inbox", || {
         !live.found(INBOX).is_empty()
     });

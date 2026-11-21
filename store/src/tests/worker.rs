@@ -217,9 +217,9 @@ fn a_sent_message_shows_at_once_and_its_copy_is_filed_in_sent() {
     assert_eq!(harness.titles(&Scope::AllInboxes), ["Plans"]);
     harness.settle();
     assert_eq!(harness.server.state().sent.len(), 1);
-    assert_eq!(harness.server.uids(SENT).len(), 1);
     harness.store.refresh();
     harness.settle();
+    assert_eq!(harness.server.uids(SENT).len(), 1);
     let plans = harness.held(&Scope::AllInboxes);
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].messages.len(), 1);
@@ -236,6 +236,7 @@ fn a_sent_copy_the_server_refuses_is_saved_on_a_later_sync() {
         .recv_timeout(WAIT)
         .expect("a send reply")
         .expect("a sent message");
+    harness.store.refresh();
     harness.settle();
     assert!(harness.server.uids(SENT).is_empty());
     assert!(matches!(harness.store.status(), Status::Failed(error) if error.contains("Sent")));
@@ -247,6 +248,72 @@ fn a_sent_copy_the_server_refuses_is_saved_on_a_later_sync() {
     harness.store.refresh();
     harness.settle();
     assert_eq!(harness.server.uids(SENT).len(), 1);
+}
+
+#[test]
+fn a_message_that_also_reaches_the_inbox_is_still_saved_to_sent() {
+    let harness = signed_in(|_| {});
+    harness
+        .store
+        .send(draft(&harness))
+        .recv_timeout(WAIT)
+        .expect("a send reply")
+        .expect("a sent message");
+    let raw = String::from_utf8(harness.server.state().sent[0].clone()).expect("UTF-8 mail");
+    harness.server.deliver(INBOX, &raw);
+    harness.store.refresh();
+    harness.settle();
+    assert_eq!(harness.server.uids(SENT).len(), 1);
+}
+
+#[test]
+fn a_copy_the_server_filed_itself_is_not_saved_again() {
+    let harness = signed_in(|_| {});
+    harness.server.state().files_sent = true;
+    harness
+        .store
+        .send(draft(&harness))
+        .recv_timeout(WAIT)
+        .expect("a send reply")
+        .expect("a sent message");
+    harness.store.refresh();
+    harness.settle();
+    harness.store.refresh();
+    harness.settle();
+    assert_eq!(harness.server.uids(SENT).len(), 1);
+    assert!(
+        !harness
+            .server
+            .take_log()
+            .iter()
+            .any(|entry| entry.starts_with("append"))
+    );
+}
+
+#[test]
+fn a_reply_marks_the_message_it_answers_as_answered() {
+    let harness = signed_in(|server| {
+        server.deliver(INBOX, &mail("ask", "ana@example.org", "Plans", 1, None));
+    });
+    let reply = Draft {
+        in_reply_to: Some("<ask@example.org>".into()),
+        ..draft(&harness)
+    };
+    harness.server.take_log();
+    harness
+        .store
+        .send(reply)
+        .recv_timeout(WAIT)
+        .expect("a send reply")
+        .expect("a sent message");
+    harness.settle();
+    assert!(
+        harness
+            .server
+            .take_log()
+            .iter()
+            .any(|entry| entry == &format!("flag {INBOX} [1] \\Answered true"))
+    );
 }
 
 #[test]

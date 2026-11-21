@@ -50,6 +50,10 @@ const SYNC_EVERY: Duration = Duration::from_secs(120);
 // Short enough that a server never parks the idling connection, which on
 // cPanel's Dovecot stops new-mail notices after about thirty seconds.
 const WATCH_PATIENCE: Duration = Duration::from_secs(25);
+#[cfg(not(test))]
+const SENT_GRACE: i64 = 15;
+#[cfg(test)]
+const SENT_GRACE: i64 = 0;
 const WATCH_RETRY_FIRST: Duration = Duration::from_secs(15);
 const WATCH_RETRY_MOST: Duration = Duration::from_secs(15 * 60);
 
@@ -1066,13 +1070,22 @@ impl<S: Server> Worker<S> {
                 .as_ref()
                 .is_none_or(|id| !filed.contains(id))
         });
-        data.unsent.retain(|copy| !filed.contains(&copy.message_id));
+        let in_sent: HashSet<String> = data
+            .sent
+            .iter()
+            .flat_map(|sent| sent.messages.values())
+            .filter_map(|message| message.message_id.clone())
+            .collect();
+        data.unsent
+            .retain(|copy| !in_sent.contains(&copy.message_id));
+        let now = Utc::now().timestamp();
+        let due = |copy: &UnsentCopy| !copy.saved && now - copy.sent_at >= SENT_GRACE;
         let mut unsaved = None;
-        if result.is_ok() && data.unsent.iter().any(|copy| !copy.saved) {
+        if result.is_ok() && data.unsent.iter().any(due) {
             match data.sent_name().map(str::to_string) {
                 None => unsaved = Some("this account has no Sent folder".to_string()),
                 Some(sent) => {
-                    for copy in data.unsent.iter_mut().filter(|copy| !copy.saved) {
+                    for copy in data.unsent.iter_mut().filter(|copy| due(copy)) {
                         let raw = STANDARD.decode(&copy.raw).unwrap_or_default();
                         match connection.append(&host, &sent, &raw).await {
                             Ok(()) => copy.saved = true,
@@ -1152,39 +1165,48 @@ impl<S: Server> Worker<S> {
                 message_id: id.clone(),
                 raw: STANDARD.encode(&raw),
                 saved: false,
+                sent_at: Utc::now().timestamp(),
             });
         }
         self.save_data(&account.key());
         self.publish();
         let _ = reply.send(Ok(()));
-        let saved = match sent_name {
-            None => Err("this account has no Sent folder".to_string()),
-            Some(name) => match self.server.connect(&account, &password).await {
-                Ok(mut connection) => {
-                    let appended = connection
-                        .append(account.imap_host.trim(), &name, &raw)
-                        .await;
-                    connection.close().await;
-                    appended
-                }
-                Err(error) => Err(error),
-            },
+        let own = self.own.clone();
+        let key = account.key();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(SENT_GRACE as u64 + 1)).await;
+            let _ = own.send(Command::Arrived(key));
+        });
+        let answered: Vec<(String, u32)> = match (&draft.in_reply_to, &draft.reaction) {
+            (Some(target), None) => self
+                .data
+                .get(&account.key())
+                .map(|data| {
+                    data.messages()
+                        .into_iter()
+                        .filter(|message| message.uid != 0)
+                        .filter(|message| message.message_id.as_ref() == Some(target))
+                        .map(|message| (message.mailbox, message.uid))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
         };
-        match saved {
-            Ok(()) => {
-                if let Some(copy) = self
-                    .data
-                    .get_mut(&account.key())
-                    .and_then(|data| data.unsent.iter_mut().find(|copy| copy.message_id == id))
-                {
-                    copy.saved = true;
-                }
-                self.save_data(&account.key());
+        if !answered.is_empty()
+            && let Ok(mut connection) = self.server.connect(&account, &password).await
+        {
+            for (mailbox, uid) in &answered {
+                let _ = connection
+                    .set_flag(
+                        account.imap_host.trim(),
+                        mailbox,
+                        &[*uid],
+                        "\\Answered",
+                        true,
+                    )
+                    .await;
             }
-            Err(error) => self.set_status(Status::Failed(format!(
-                "{}: sent, but the copy for the Sent folder was not saved ({error}); Zirbe will try again",
-                account.address
-            ))),
+            connection.close().await;
         }
         if let Some((mailbox, uid)) = draft.replaces
             && let Ok(mut connection) = self.server.connect(&account, &password).await

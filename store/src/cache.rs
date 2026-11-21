@@ -53,6 +53,8 @@ pub(crate) struct UnsentCopy {
     pub raw: String,
     #[serde(default)]
     pub saved: bool,
+    #[serde(default)]
+    pub sent_at: i64,
 }
 
 impl AccountData {
