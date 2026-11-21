@@ -13,12 +13,99 @@ mod imap;
 mod invite;
 mod mime;
 mod model;
+mod owed;
 mod presets;
 mod search;
 mod secrets;
 mod server;
 mod smtp;
 mod subject;
+async fn settle_changes<S: Session>(
+    connection: &mut S,
+    host: &str,
+    data: &mut AccountData,
+) -> Result<bool, String> {
+    let mut created = false;
+    while let Some(change) = data.owed.changes.first().cloned() {
+        let current = data
+            .mailbox_mut(&change.mailbox)
+            .map(|mailbox| mailbox.uid_validity);
+        if current.is_some_and(|validity| validity != 0 && validity != change.uid_validity) {
+            data.owed.changes.remove(0);
+            continue;
+        }
+        let (mailbox, uids) = (&change.mailbox, &change.uids);
+        let outcome = match &change.action {
+            Action::Flag(on) => {
+                connection
+                    .set_flag(host, mailbox, uids, "\\Flagged", *on)
+                    .await
+            }
+            Action::Read(on) => {
+                connection
+                    .set_flag(host, mailbox, uids, "\\Seen", *on)
+                    .await
+            }
+            Action::Delete => connection.delete(host, mailbox, uids).await,
+            Action::Move { to, create } => {
+                let exists = data.folders.iter().any(|folder| &folder.name == to);
+                let made = if *create && !exists {
+                    connection.create(host, to).await
+                } else {
+                    Ok(())
+                };
+                match made {
+                    Ok(()) => {
+                        if *create && !exists {
+                            created = true;
+                            data.owed.changes[0].action = Action::Move {
+                                to: to.clone(),
+                                create: false,
+                            };
+                        }
+                        connection.move_to(host, mailbox, uids, to).await
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+        };
+        match outcome {
+            Ok(()) => {
+                data.owed.changes.remove(0);
+            }
+            Err(error) => {
+                data.owed.changes[0].failures += 1;
+                if data.owed.changes[0].failures >= owed::GIVE_UP_AFTER {
+                    data.owed.changes.remove(0);
+                    return Err(format!("{error}; Zirbe stopped trying that change"));
+                }
+                return Err(format!("{error}; Zirbe will try again"));
+            }
+        }
+    }
+    Ok(created)
+}
+
+async fn mark_answered<S: Session>(
+    connection: &mut S,
+    host: &str,
+    data: &AccountData,
+    target: &str,
+) {
+    let copies: Vec<(String, u32)> = data
+        .messages()
+        .into_iter()
+        .filter(|message| message.uid != 0)
+        .filter(|message| message.message_id.as_deref() == Some(target))
+        .map(|message| (message.mailbox, message.uid))
+        .collect();
+    for (mailbox, uid) in copies {
+        let _ = connection
+            .set_flag(host, &mailbox, &[uid], "\\Answered", true)
+            .await;
+    }
+}
+
 #[cfg(test)]
 mod tests;
 mod thread;
@@ -44,6 +131,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use cache::{AccountData, Mailbox, UnsentCopy};
 use mime::{Body, Fetched};
+use owed::{Action, NotSent, OwedChange, OwedSend};
 use server::{Live, Server, Session};
 
 const SYNC_EVERY: Duration = Duration::from_secs(120);
@@ -980,6 +1068,12 @@ impl<S: Server> Worker<S> {
             Scope::Mailbox { account: key, name } if *key == account.key() => Some(name.clone()),
             _ => None,
         };
+        let owed_changes = settle_changes(&mut connection, &host, &mut data)
+            .await
+            .err();
+        let owed_sends = self
+            .settle_sends(account, &password, &mut connection, &mut data)
+            .await;
         let result = async {
             if data.inbox.name.is_empty() {
                 data.inbox.name = INBOX.into();
@@ -1058,6 +1152,7 @@ impl<S: Server> Worker<S> {
             Ok(())
         }
         .await;
+        owed::apply_locally(&mut data);
         data.restore_transcripts();
         let filed: HashSet<String> = data
             .messages()
@@ -1098,11 +1193,13 @@ impl<S: Server> Worker<S> {
         }
         self.data.insert(account.key(), data);
         connection.close().await;
-        result.and(match unsaved {
-            Some(error) => Err(format!(
+        result.and(match (owed_changes, owed_sends, unsaved) {
+            (Some(error), _, _) => Err(error),
+            (None, Some(error), _) => Err(error),
+            (None, None, Some(error)) => Err(format!(
                 "a sent message's copy for the Sent folder is still not saved ({error}); Zirbe will try again"
             )),
-            None => Ok(()),
+            (None, None, None) => Ok(()),
         })
     }
 
@@ -1141,10 +1238,25 @@ impl<S: Server> Worker<S> {
             }
         };
         let raw = message.formatted();
-        if let Err(error) = self.server.send(&account, &password, message).await {
-            let _ = reply.send(Err(error));
-            return;
-        }
+        let envelope = message.envelope();
+        let from = envelope.from().map(ToString::to_string);
+        let to: Vec<String> = envelope.to().iter().map(ToString::to_string).collect();
+        let answers = draft
+            .in_reply_to
+            .clone()
+            .filter(|_| draft.reaction.is_none());
+        let waiting = match self
+            .server
+            .send(&account, &password, from.as_deref(), &to, &raw)
+            .await
+        {
+            Ok(()) => None,
+            Err(NotSent::Never(error)) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+            Err(NotSent::Later(error)) => Some(error),
+        };
         let sent_name = self
             .data
             .get(&account.key())
@@ -1157,58 +1269,57 @@ impl<S: Server> Worker<S> {
             header: &raw,
             body: Body::Whole,
             arrived: Some(Utc::now()),
+        })
+        .map(|mut local| {
+            local.waiting = waiting.is_some();
+            local
         });
         if let Some(data) = self.data.get_mut(&account.key()) {
             if draft.in_reply_to.is_none() {
                 data.started.insert(id.clone());
             }
             data.unfiled.extend(local);
-            data.unsent.push(UnsentCopy {
-                message_id: id.clone(),
-                raw: STANDARD.encode(&raw),
-                saved: false,
-                sent_at: Utc::now().timestamp(),
-            });
+            if waiting.is_some() {
+                data.owed.sends.push(OwedSend {
+                    message_id: id.clone(),
+                    raw: STANDARD.encode(&raw),
+                    from,
+                    to,
+                    answers: answers.clone(),
+                });
+            } else {
+                data.unsent.push(UnsentCopy {
+                    message_id: id.clone(),
+                    raw: STANDARD.encode(&raw),
+                    saved: false,
+                    sent_at: Utc::now().timestamp(),
+                });
+            }
         }
         self.save_data(&account.key());
         self.publish();
         let _ = reply.send(Ok(()));
-        let own = self.own.clone();
-        let key = account.key();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(SENT_GRACE as u64 + 1)).await;
-            let _ = own.send(Command::Arrived(key));
-        });
-        let answered: Vec<(String, u32)> = match (&draft.in_reply_to, &draft.reaction) {
-            (Some(target), None) => self
-                .data
-                .get(&account.key())
-                .map(|data| {
-                    data.messages()
-                        .into_iter()
-                        .filter(|message| message.uid != 0)
-                        .filter(|message| message.message_id.as_ref() == Some(target))
-                        .map(|message| (message.mailbox, message.uid))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        if !answered.is_empty()
-            && let Ok(mut connection) = self.server.connect(&account, &password).await
-        {
-            for (mailbox, uid) in &answered {
-                let _ = connection
-                    .set_flag(
-                        account.imap_host.trim(),
-                        mailbox,
-                        &[*uid],
-                        "\\Answered",
-                        true,
-                    )
-                    .await;
+        if let Some(error) = &waiting {
+            self.set_status(Status::Failed(format!(
+                "{}: the message is waiting to send ({error}); Zirbe will try again",
+                account.address
+            )));
+            self.publish();
+        } else {
+            let own = self.own.clone();
+            let key = account.key();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(SENT_GRACE as u64 + 1)).await;
+                let _ = own.send(Command::Arrived(key));
+            });
+            if let Some(target) = &answers
+                && let Ok(mut connection) = self.server.connect(&account, &password).await
+            {
+                if let Some(data) = self.data.get(&account.key()) {
+                    mark_answered(&mut connection, account.imap_host.trim(), data, target).await;
+                }
+                connection.close().await;
             }
-            connection.close().await;
         }
         if let Some((mailbox, uid)) = draft.replaces
             && let Ok(mut connection) = self.server.connect(&account, &password).await
@@ -1315,62 +1426,117 @@ impl<S: Server> Worker<S> {
                 }
             }
         }
+        let action = match (&change, destination) {
+            (Change::Flag(on), _) => Some(Action::Flag(*on)),
+            (Change::Read(on), _) => Some(Action::Read(*on)),
+            (Change::Delete, _) => Some(Action::Delete),
+            (_, Some(Ok(to))) => Some(Action::Move { to, create: false }),
+            (_, Some(Err(to))) => Some(Action::Move { to, create: true }),
+            _ => None,
+        };
+        let owed = action.is_some() && !by_mailbox.is_empty();
+        if let Some(action) = action {
+            for (mailbox, uids) in by_mailbox {
+                let uid_validity = data
+                    .mailbox_mut(&mailbox)
+                    .map_or(0, |mailbox| mailbox.uid_validity);
+                data.owed.changes.push(OwedChange {
+                    mailbox,
+                    uid_validity,
+                    uids,
+                    action: action.clone(),
+                    failures: 0,
+                });
+            }
+        }
         self.save_data(account);
         self.publish();
-        if by_mailbox.is_empty() {
+        if !owed {
             return;
         }
-        let host = known.imap_host.trim().to_string();
-        let result: Result<bool, String> = async {
-            let password = self.server.password(account).await?;
-            let mut connection = self.server.connect(&known, &password).await?;
-            let outcome = async {
-                let mut created = false;
-                let destination = match destination {
-                    Some(Ok(name)) => Some(name),
-                    Some(Err(name)) => {
-                        connection.create(&host, &name).await?;
-                        created = true;
-                        Some(name)
-                    }
-                    None => None,
-                };
-                for (mailbox, uids) in &by_mailbox {
-                    match (&change, &destination) {
-                        (Change::Flag(on), _) => {
-                            connection
-                                .set_flag(&host, mailbox, uids, "\\Flagged", *on)
-                                .await?
-                        }
-                        (Change::Read(on), _) => {
-                            connection
-                                .set_flag(&host, mailbox, uids, "\\Seen", *on)
-                                .await?
-                        }
-                        (Change::Delete, _) => connection.delete(&host, mailbox, uids).await?,
-                        (_, Some(destination)) => {
-                            connection
-                                .move_to(&host, mailbox, uids, destination)
-                                .await?
-                        }
-                        _ => {}
-                    }
-                }
-                Ok::<bool, String>(created)
-            }
-            .await;
-            connection.close().await;
-            outcome
-        }
-        .await;
-        match result {
+        match self.settle_changes(&known).await {
             Ok(true) => self.sync_accounts(vec![known]).await,
             Ok(false) => {}
             Err(error) => {
                 self.set_status(Status::Failed(format!("{}: {error}", known.address)));
-                self.sync_accounts(vec![known]).await;
+                self.publish();
             }
         }
+    }
+
+    async fn settle_changes(&mut self, account: &Account) -> Result<bool, String> {
+        let password = self.server.password(&account.key()).await?;
+        let mut connection = self.server.connect(account, &password).await?;
+        let mut data = self.data.remove(&account.key()).unwrap_or_default();
+        let settled = settle_changes(&mut connection, account.imap_host.trim(), &mut data).await;
+        connection.close().await;
+        self.data.insert(account.key(), data);
+        self.save_data(&account.key());
+        settled
+    }
+
+    async fn settle_sends(
+        &self,
+        account: &Account,
+        password: &str,
+        connection: &mut S::Session,
+        data: &mut AccountData,
+    ) -> Option<String> {
+        let host = account.imap_host.trim();
+        let mut trouble = None;
+        let mut index = 0;
+        while index < data.owed.sends.len() {
+            let owed = data.owed.sends[index].clone();
+            let raw = STANDARD.decode(&owed.raw).unwrap_or_default();
+            match self
+                .server
+                .send(account, password, owed.from.as_deref(), &owed.to, &raw)
+                .await
+            {
+                Ok(()) => {
+                    data.owed.sends.remove(index);
+                    for message in &mut data.unfiled {
+                        if message.message_id.as_deref() == Some(owed.message_id.as_str()) {
+                            message.waiting = false;
+                        }
+                    }
+                    data.unsent.push(UnsentCopy {
+                        message_id: owed.message_id.clone(),
+                        raw: owed.raw.clone(),
+                        saved: false,
+                        sent_at: Utc::now().timestamp(),
+                    });
+                    if let Some(target) = &owed.answers {
+                        mark_answered(connection, host, data, target).await;
+                    }
+                }
+                Err(NotSent::Later(error)) => {
+                    trouble = Some(format!(
+                        "a message is still waiting to send ({error}); Zirbe will try again"
+                    ));
+                    index += 1;
+                }
+                Err(NotSent::Never(error)) => {
+                    data.owed.sends.remove(index);
+                    data.unfiled.retain(|message| {
+                        message.message_id.as_deref() != Some(owed.message_id.as_str())
+                    });
+                    let kept = match actions::role_folder(&data.folders, Role::Drafts) {
+                        Some(drafts) => connection
+                            .append_with(host, &drafts, &raw, "(\\Draft \\Seen)")
+                            .await
+                            .is_ok(),
+                        None => false,
+                    };
+                    trouble = Some(if kept {
+                        format!("a waiting message was refused ({error}); it is in Drafts")
+                    } else {
+                        format!("a waiting message was refused ({error})")
+                    });
+                }
+            }
+        }
+        trouble
     }
 
     async fn empty(&mut self, account: &str, name: &str, keys: &[String], highest: u32) {

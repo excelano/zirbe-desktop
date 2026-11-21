@@ -298,6 +298,19 @@ pub fn show(
         if let Some(emojis) = message.message_id.as_ref().and_then(|id| reactions.get(id)) {
             badge(ui, shape, mine, emojis, palette);
         }
+        if message.waiting {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(EDGE + PADDING.x);
+                    ui.label(
+                        RichText::new("Waiting to send")
+                            .size(11.5)
+                            .italics()
+                            .color(palette.secondary),
+                    );
+                });
+            });
+        }
         let extra = extras(ui, message, mine, shape, view, palette);
         if let Some(choice) = choice.or(extra) {
             action = Some(Action {

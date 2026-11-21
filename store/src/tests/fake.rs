@@ -12,6 +12,7 @@ use crate::cache::Mailbox;
 use crate::folders::{self, Listed};
 use crate::mime::{self, Body, Fetched};
 use crate::model::{Account, FolderInfo, INBOX, Role};
+use crate::owed::NotSent;
 use crate::server::{Server, Session};
 
 pub(crate) const SENT: &str = "INBOX.Sent";
@@ -200,13 +201,26 @@ impl Server for Fake {
         &self,
         _account: &Account,
         _password: &str,
-        message: lettre::Message,
-    ) -> Result<(), String> {
+        _from: Option<&str>,
+        _to: &[String],
+        raw: &[u8],
+    ) -> Result<(), NotSent> {
         let mut state = self.state();
-        state.attempt("send", "send".into())?;
-        state.sent.push(message.formatted());
+        state.log.push("send".into());
+        if state.failing.contains("refuse") {
+            return Err(NotSent::Never("the fake server refused the message".into()));
+        }
+        if state.failing.contains("send") {
+            return Err(NotSent::Later(
+                "the fake server could not be reached".into(),
+            ));
+        }
+        state.sent.push(raw.to_vec());
         if state.files_sent {
-            state.folder(SENT)?.add(message.formatted(), true);
+            state
+                .folder(SENT)
+                .map_err(NotSent::Never)?
+                .add(raw.to_vec(), true);
         }
         Ok(())
     }

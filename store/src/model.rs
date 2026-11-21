@@ -185,6 +185,8 @@ pub struct Message {
     pub reaction: Option<String>,
     #[serde(default)]
     pub invite: Option<Invite>,
+    #[serde(default)]
+    pub waiting: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

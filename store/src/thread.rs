@@ -488,6 +488,7 @@ pub(crate) mod tests {
             flagged: false,
             reaction: None,
             invite: None,
+            waiting: false,
         }
     }
 

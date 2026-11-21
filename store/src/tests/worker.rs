@@ -319,7 +319,7 @@ fn a_reply_marks_the_message_it_answers_as_answered() {
 #[test]
 fn a_message_the_server_does_not_take_is_reported_and_not_shown() {
     let harness = signed_in(|_| {});
-    harness.server.fail("send", true);
+    harness.server.fail("refuse", true);
     let refused = harness
         .store
         .send(draft(&harness))
@@ -462,4 +462,78 @@ fn signing_out_forgets_the_password_and_the_cached_mail() {
     assert!(harness.server.state().keyring.is_empty());
     assert!(!cache.exists());
     assert_eq!(harness.store.status(), Status::NoAccounts);
+}
+
+#[test]
+fn a_trashed_conversation_stays_gone_while_the_server_refuses_and_moves_once_it_accepts() {
+    let harness = signed_in(|fake| {
+        fake.deliver(INBOX, &mail("a", "ana@example.org", "Lunch", 1, None));
+        fake.deliver(INBOX, &mail("b", "ben@example.org", "Hike", 2, None));
+    });
+    let lunch = harness
+        .held(&Scope::AllInboxes)
+        .into_iter()
+        .find(|c| c.title == "Lunch")
+        .expect("the lunch conversation");
+    harness.server.fail("move", true);
+    harness
+        .store
+        .change(&[lunch], &Scope::AllInboxes, Change::Trash);
+    harness.settle();
+    harness.store.refresh();
+    harness.settle();
+    assert_eq!(harness.titles(&Scope::AllInboxes), ["Hike"]);
+    harness.server.fail("move", false);
+    harness.store.refresh();
+    harness.settle();
+    assert_eq!(harness.server.uids(INBOX), [2]);
+    assert_eq!(harness.server.uids(TRASH).len(), 1);
+    assert_eq!(harness.titles(&Scope::AllInboxes), ["Hike"]);
+}
+
+#[test]
+fn a_message_that_cannot_go_yet_waits_and_goes_once_the_server_answers() {
+    let harness = signed_in(|_| {});
+    harness.server.fail("send", true);
+    harness
+        .store
+        .send(draft(&harness))
+        .recv_timeout(WAIT)
+        .expect("a send reply")
+        .expect("a queued message");
+    harness.settle();
+    let waiting = harness.held(&Scope::AllInboxes);
+    assert_eq!(waiting.len(), 1);
+    assert!(waiting[0].messages[0].waiting);
+    assert!(harness.server.state().sent.is_empty());
+    harness.server.fail("send", false);
+    harness.store.refresh();
+    harness.settle();
+    assert_eq!(harness.server.state().sent.len(), 1);
+    harness.store.refresh();
+    harness.settle();
+    assert_eq!(harness.server.uids(SENT).len(), 1);
+    let sent = harness.held(&Scope::AllInboxes);
+    assert_eq!(sent.len(), 1);
+    assert!(!sent[0].messages[0].waiting);
+}
+
+#[test]
+fn a_waiting_message_the_server_later_refuses_is_kept_in_drafts() {
+    let harness = signed_in(|_| {});
+    harness.server.fail("send", true);
+    harness
+        .store
+        .send(draft(&harness))
+        .recv_timeout(WAIT)
+        .expect("a send reply")
+        .expect("a queued message");
+    harness.server.fail("send", false);
+    harness.server.fail("refuse", true);
+    harness.store.refresh();
+    harness.settle();
+    assert!(harness.server.state().sent.is_empty());
+    assert_eq!(harness.server.uids(DRAFTS).len(), 1);
+    assert!(harness.titles(&Scope::AllInboxes).is_empty());
+    assert!(matches!(harness.store.status(), Status::Failed(error) if error.contains("Drafts")));
 }

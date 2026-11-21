@@ -56,9 +56,13 @@ Settings says whether transcription is installed and what to install if not. A n
 it has no subject, suggests addresses from the mail already synced and from the
 desktop's address book, offers the same people as a searchable list under
 Contacts, and can be saved to the server's Drafts folder instead of sent; opening a draft from the
-Drafts folder brings it back to finish. A reply that fails to send keeps a
-Retry button, and a note between messages says when someone joins or leaves the
-conversation. Image attachments show as pictures under their message, fetched
+Drafts folder brings it back to finish. A message that cannot go out yet, with
+the computer offline or the server not answering, shows Waiting to send and goes
+at a later check for mail, even after Zirbe restarts; one the server refuses
+keeps a Retry button, and one refused while waiting is kept in Drafts. An
+archive, move, delete or flag that does not reach the server is tried again at
+every check for mail, and the conversation stays where you put it meanwhile. A
+note between messages says when someone joins or leaves the conversation. Image attachments show as pictures under their message, fetched
 when the message comes into view, and a picture you send shows at once. A
 video shows its first frame and opens in the default player when clicked, and
 an audio attachment plays in its bubble, with a bar to move through it. An invitation shows as a card with its time,

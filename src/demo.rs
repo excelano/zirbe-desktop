@@ -99,6 +99,7 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
                 flagged: false,
                 reaction: None,
                 invite: None,
+                waiting: false,
             }
         })
         .collect();
@@ -416,6 +417,7 @@ impl MailSource for Demo {
             flagged: false,
             reaction: draft.reaction.clone(),
             invite: None,
+            waiting: false,
         };
         match key.and_then(|key| conversations.iter_mut().find(|c| c.key == key)) {
             Some(conversation) => {

@@ -92,6 +92,7 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
         flagged: false,
         reaction: content::reaction(&headers),
         invite: content::invite(&headers),
+        waiting: false,
     })
 }
 

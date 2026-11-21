@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::cache::Mailbox;
 use crate::imap::Connection;
 use crate::model::{Account, FolderInfo};
+use crate::owed::NotSent;
 use crate::{secrets, smtp};
 
 pub(crate) trait Server: Send + Sync + 'static {
@@ -34,8 +35,10 @@ pub(crate) trait Server: Send + Sync + 'static {
         &self,
         account: &Account,
         password: &str,
-        message: lettre::Message,
-    ) -> impl Future<Output = Result<(), String>> + Send;
+        from: Option<&str>,
+        to: &[String],
+        raw: &[u8],
+    ) -> impl Future<Output = Result<(), NotSent>> + Send;
 }
 
 pub(crate) trait Session: Sized + Send {
@@ -156,8 +159,10 @@ impl Server for Live {
         &self,
         account: &Account,
         password: &str,
-        message: lettre::Message,
-    ) -> Result<(), String> {
-        smtp::send(account, password, message).await
+        from: Option<&str>,
+        to: &[String],
+        raw: &[u8],
+    ) -> Result<(), NotSent> {
+        smtp::send(account, password, from, to, raw).await
     }
 }

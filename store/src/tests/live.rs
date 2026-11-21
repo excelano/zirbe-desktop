@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use super::harness::Harness;
 use crate::cache::Mailbox;
 use crate::imap::Connection;
+use crate::owed::NotSent;
 use crate::server::{Server, Session};
 use crate::{Account, Change, Draft, INBOX, MailSource, Person, Role, Scope, smtp};
 
@@ -61,9 +62,11 @@ impl Server for Scratch {
         &self,
         account: &Account,
         password: &str,
-        message: lettre::Message,
-    ) -> Result<(), String> {
-        smtp::send(account, password, message).await
+        from: Option<&str>,
+        to: &[String],
+        raw: &[u8],
+    ) -> Result<(), NotSent> {
+        smtp::send(account, password, from, to, raw).await
     }
 }
 

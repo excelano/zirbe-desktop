@@ -46,6 +46,7 @@ pub(crate) struct AccountData {
     pub unsent: Vec<UnsentCopy>,
     pub blocked: BTreeSet<String>,
     pub transcripts: BTreeMap<String, String>,
+    pub owed: crate::owed::Owed,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

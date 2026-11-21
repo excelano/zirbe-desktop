@@ -8,6 +8,7 @@ use lettre::transport::smtp::client::{Tls, TlsParametersBuilder};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 
 use crate::model::Account;
+use crate::owed::NotSent;
 
 fn transport(
     account: &Account,
@@ -35,18 +36,32 @@ fn transport(
 pub(crate) async fn send(
     account: &Account,
     password: &str,
-    message: lettre::Message,
-) -> Result<(), String> {
+    from: Option<&str>,
+    to: &[String],
+    raw: &[u8],
+) -> Result<(), NotSent> {
     let host = account.smtp_host.trim();
-    transport(account, password)?
-        .send(message)
+    let address = |text: &str| {
+        text.parse::<lettre::Address>()
+            .map_err(|error| NotSent::Never(format!("{text} is not an address: {error}")))
+    };
+    let envelope = lettre::address::Envelope::new(
+        from.map(address).transpose()?,
+        to.iter()
+            .map(|text| address(text))
+            .collect::<Result<_, _>>()?,
+    )
+    .map_err(|error| NotSent::Never(format!("the message has no recipients: {error}")))?;
+    transport(account, password)
+        .map_err(NotSent::Later)?
+        .send_raw(&envelope, raw)
         .await
         .map(|_| ())
         .map_err(|error| {
             if error.is_permanent() {
-                format!("{host} refused the message: {error}")
+                NotSent::Never(format!("{host} refused the message: {error}"))
             } else {
-                format!("{host}: {error}")
+                NotSent::Later(format!("{host}: {error}"))
             }
         })
 }

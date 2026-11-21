@@ -18,6 +18,9 @@ The store crate, `store/` (`zirbe-store`), is the mail engine behind
 (a message's HTML for Web View, its embedded images inlined), `folders.rs`
 (the folder list: special-use roles, modified UTF-7 names, the order shown),
 `actions.rs` (which copies of a conversation's messages a change touches),
+`owed.rs` (work owed to the server: changes and sends it has not yet accepted,
+saved with the account's cache, settled before every sync and applied to the
+synced view until then),
 `search.rs` (word-start matching that ignores case and accents), `invite.rs`
 (the text/calendar reader behind invitation cards),
 `thread.rs` (the conversation rules, as connected components over the threading
