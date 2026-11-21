@@ -6965,7 +6965,7 @@ dependencies = [
 
 [[package]]
 name = "zirbe"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyrender",
  "anyrender_vello_cpu",
@@ -6995,7 +6995,7 @@ dependencies = [
 
 [[package]]
 name = "zirbe-store"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "apple-native-keyring-store",
  "async-imap",
