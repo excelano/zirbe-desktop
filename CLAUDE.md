@@ -2,13 +2,13 @@
 
 Zirbe for the Linux desktop: an IMAP and SMTP account read as conversations, an
 egui application. It is the desktop sibling of excelano/zirbe-ios, the iPhone and
-iPad app, and keeps that app's model and principles: a conversation is an email
-thread joined by Message-ID, In-Reply-To and References, less any private reply
-out of it (one sharing no one with the message it answers, or narrowing a group
-to one person, the account's own addresses and aliases aside), which starts a
-conversation of its own; the subject is its name; only the email standards are
-implemented; the only network destinations are the user's own mail servers, and
-a message's image sources once the user chooses Show Images for it.
+iPad app, and keeps that app's model and principles. A conversation is an email
+thread named by its subject, defined for both apps in zirbe-ios's
+`CONVERSATIONS.md` (https://github.com/excelano/zirbe-ios/blob/main/CONVERSATIONS.md,
+cloned beside this repo at `../zirbe-ios`); read it before changing threading or
+reactions, and change it with them. Only the email standards are implemented,
+and the only network destinations are the user's own mail servers, and a
+message's image sources once the user chooses Show Images for it.
 
 ## Layout
 
@@ -20,9 +20,8 @@ The store crate, `store/` (`zirbe-store`), is the mail engine behind
 `actions.rs` (which copies of a conversation's messages a change touches),
 `search.rs` (word-start matching that ignores case and accents), `invite.rs`
 (the text/calendar reader behind invitation cards),
-`thread.rs` (grouping by the threading headers, splitting off private replies
-with the message they answer as context outside the conversation's copies,
-keeping every copy of a message filed in several folders), `compose.rs` (reply
+`thread.rs` (the conversation rules, as connected components over the threading
+headers), `compose.rs` (reply
 recipients and the outgoing message), `secrets.rs` (keyring-core), `cache.rs`, and
 `server.rs`, the `Server` and `Session` traits every IMAP, SMTP and keyring
 call of the worker goes through, with `Live` as the real implementation. Its

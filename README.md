@@ -1,14 +1,13 @@
 # Zirbe for the Linux desktop
 
 Zirbe is an email client that reads like a texting app while keeping real email
-underneath. A conversation is an email thread, not a person: messages are joined
-by their `Message-ID`, `In-Reply-To` and `References` headers and shown like a
-named group chat, with the subject as the title, the people on From, To and Cc
-as the members, and each message as a bubble in time order. A private reply
-out of a thread, such as an answer to a message sent to many people by Bcc,
-starts a conversation of its own with the message it answers shown at the top;
-an account's other addresses, set in Settings, count as yours. Starting a new
-conversation means naming it, and that name is the subject.
+underneath. A conversation is an email thread, not a person, shown like a named
+group chat, with the subject as the title, the people on the thread as the
+members, and each message as a bubble in time order. Both Zirbe apps follow the
+same [definition of a conversation](https://github.com/excelano/zirbe-ios/blob/main/CONVERSATIONS.md),
+which says how messages are grouped, when a private reply starts a conversation
+of its own, and how reactions travel. Starting a new conversation means naming
+it, and that name is the subject.
 
 This is the desktop sibling of the [Zirbe app for iPhone and iPad](https://github.com/excelano/zirbe-ios),
 with the same principles. It speaks only the email standards (IMAP, SMTP and
@@ -67,9 +66,8 @@ place and organizer, a Join button for Teams, Meet, Zoom and Webex links, and
 Add to Calendar, which hands the invitation to the calendar application; answers
 to it read as a line such as "Ana accepted". The right-click menu also reacts
 to a message with 👍 👎 ❤ 😂 ‼ or ❓, shown at once and sent after five seconds
-unless undone; a reaction is a short reply with an X-Zirbe-Reaction header, the
-same as the iPhone app sends, so each app shows the other's reactions as
-badges, and Gmail's reactions show the same way. In Settings each account
+unless undone; each Zirbe app shows the other's reactions as badges, and
+Gmail's reactions show the same way. In Settings each account
 can have a label and one of eight colors, shown as a dot beside its
 conversations in All Inboxes; an account whose server starts refusing the saved
 password says so there and takes a new one with Sign In Again; and the list can
