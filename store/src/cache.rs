@@ -30,7 +30,7 @@ pub(crate) struct Listing {
     pub at: i64,
 }
 
-const FORMAT: u32 = 4;
+const FORMAT: u32 = 5;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -45,6 +45,7 @@ pub(crate) struct AccountData {
     pub pinned: BTreeSet<String>,
     pub unsent: Vec<UnsentCopy>,
     pub blocked: BTreeSet<String>,
+    pub transcripts: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -98,13 +99,28 @@ impl AccountData {
     }
 
     pub fn transcribed(&mut self, message_id: &str, text: &str) {
+        self.transcripts
+            .insert(message_id.to_string(), text.to_string());
+        self.restore_transcripts();
+    }
+
+    pub fn restore_transcripts(&mut self) {
+        if self.transcripts.is_empty() {
+            return;
+        }
+        let transcripts = &self.transcripts;
         let filed = std::iter::once(&mut self.inbox)
             .chain(self.sent.as_mut())
             .chain(self.others.values_mut())
             .flat_map(|mailbox| mailbox.messages.values_mut());
         for message in filed.chain(self.unfiled.iter_mut()) {
-            if message.message_id.as_deref() == Some(message_id) {
-                message.transcript = Some(text.to_string());
+            if message.transcript.is_none()
+                && let Some(text) = message
+                    .message_id
+                    .as_ref()
+                    .and_then(|id| transcripts.get(id))
+            {
+                message.transcript = Some(text.clone());
             }
         }
     }
@@ -149,6 +165,12 @@ pub(crate) fn save_accounts(path: &Path, accounts: &[Account]) -> Result<(), Str
 pub(crate) fn load_data(path: &Path) -> AccountData {
     let mut data: AccountData = read(path).unwrap_or_default();
     if data.format < FORMAT {
+        let kept: Vec<(String, String)> = data
+            .messages()
+            .into_iter()
+            .filter_map(|message| Some((message.message_id?, message.transcript?)))
+            .collect();
+        data.transcripts.extend(kept);
         for mailbox in data.mailboxes_mut() {
             mailbox.messages.clear();
             mailbox.uid_validity = 0;
@@ -202,6 +224,27 @@ mod tests {
         data.transcribed("<v@x>", "See you at noon");
         let transcripts: Vec<_> = data.messages().into_iter().map(|m| m.transcript).collect();
         assert_eq!(transcripts, vec![Some("See you at noon".to_string()); 2]);
+    }
+
+    #[test]
+    fn a_transcript_outlives_its_cached_message() {
+        let raw = r#"{"inbox":{"name":"INBOX","uid_validity":1,"messages":{"7":{"uid":7,"message_id":"<v@x>","in_reply_to":null,"references":[],"from":null,"to":[],"cc":[],"subject":"Hi","date":"2026-11-09T12:00:00Z","text":"","attachments":["a.m4a"],"seen":true,"partial":false,"transcript":"See you at noon"}}}}"#;
+        let path =
+            std::env::temp_dir().join(format!("zirbe-transcript-test-{}.json", std::process::id()));
+        std::fs::write(&path, raw).expect("a written cache");
+        let mut data = load_data(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(data.inbox.messages.is_empty());
+        let mut refetched: Mailbox = serde_json::from_str(
+            r#"{"name":"INBOX","uid_validity":2,"messages":{"9":{"uid":9,"message_id":"<v@x>","in_reply_to":null,"references":[],"from":null,"to":[],"cc":[],"subject":"Hi","date":"2026-11-09T12:00:00Z","text":"","attachments":["a.m4a"],"seen":true,"partial":false}}}"#,
+        )
+        .expect("a mailbox");
+        std::mem::swap(&mut data.inbox, &mut refetched);
+        data.restore_transcripts();
+        assert_eq!(
+            data.inbox.messages[&9].transcript.as_deref(),
+            Some("See you at noon")
+        );
     }
 
     #[test]

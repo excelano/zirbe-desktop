@@ -85,7 +85,9 @@ trying at every check for mail. Mail you sent
 is read from the account's Sent folder and sits on the right, so a thread reads
 the same whichever program you answered it from. A reply goes to everyone in
 the conversation and carries the threading headers, so it stays in the thread
-for every other mail program too. The quoted history that most mailers append
+for every other mail program too. Mail from a mailing list reads as one conversation
+named for the list, where a reply goes to the list and a reaction only to the
+person who wrote the message. The quoted history that most mailers append
 is folded away, leaving each bubble with what that message said, and a Show
 quoted text link under the bubble brings it back.
 

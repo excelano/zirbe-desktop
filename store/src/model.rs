@@ -178,6 +178,8 @@ pub struct Message {
     #[serde(default)]
     pub list: bool,
     #[serde(default)]
+    pub mailing_list: Option<List>,
+    #[serde(default)]
     pub flagged: bool,
     #[serde(default)]
     pub reaction: Option<String>,
@@ -217,6 +219,7 @@ pub struct Conversation {
     pub key: String,
     pub account: String,
     pub title: String,
+    pub list: Option<List>,
     pub members: Vec<Person>,
     pub messages: Vec<Message>,
     pub starts_with_context: bool,
@@ -225,6 +228,13 @@ pub struct Conversation {
     pub flagged: bool,
     pub pinned: bool,
     pub copies: Vec<Copy>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct List {
+    pub id: String,
+    pub name: String,
+    pub post: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

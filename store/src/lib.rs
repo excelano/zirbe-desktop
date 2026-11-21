@@ -1058,6 +1058,7 @@ impl<S: Server> Worker<S> {
             Ok(())
         }
         .await;
+        data.restore_transcripts();
         let filed: HashSet<String> = data
             .messages()
             .into_iter()
@@ -1114,6 +1115,7 @@ impl<S: Server> Worker<S> {
             Some(mailbox) => connection.sync(&host, mailbox).await.map(|_| ()),
             None => Ok(()),
         };
+        data.restore_transcripts();
         self.data.insert(account.key(), data);
         connection.close().await;
         result

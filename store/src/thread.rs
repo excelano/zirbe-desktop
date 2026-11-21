@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::model::{Account, Conversation, Copy, Message, Person};
+use crate::model::{Account, Conversation, Copy, List, Message, Person};
 use crate::subject;
 
 pub(crate) fn conversations(
@@ -11,6 +11,103 @@ pub(crate) fn conversations(
     started: &BTreeSet<String>,
     messages: Vec<Message>,
 ) -> Vec<Conversation> {
+    let posts: HashMap<String, String> = messages
+        .iter()
+        .filter_map(|message| message.mailing_list.as_ref())
+        .filter_map(|list| Some((list.post.clone()?, list.id.clone())))
+        .collect();
+    let list_of = |message: &Message| -> Option<String> {
+        if let Some(list) = &message.mailing_list {
+            return Some(list.id.clone());
+        }
+        message
+            .to
+            .iter()
+            .chain(&message.cc)
+            .find_map(|person| posts.get(&person.address.to_lowercase()).cloned())
+    };
+    let mut lists: HashMap<String, Vec<Message>> = HashMap::new();
+    let mut rest = Vec::new();
+    for message in messages {
+        match list_of(&message) {
+            Some(id) => lists.entry(id).or_default().push(message),
+            None => rest.push(message),
+        }
+    }
+    let posted: HashMap<String, Message> = lists
+        .values()
+        .flatten()
+        .filter_map(|message| Some((message.message_id.clone()?, message.clone())))
+        .collect();
+    let mut found: Vec<Conversation> = threads(me, started, rest)
+        .into_iter()
+        .map(|mut conversation| {
+            if !conversation.starts_with_context
+                && let Some(first) = conversation.messages.first()
+                && let Some(answered) = first
+                    .in_reply_to
+                    .iter()
+                    .chain(first.references.iter().rev())
+                    .find_map(|id| posted.get(id))
+            {
+                conversation.messages.insert(0, answered.clone());
+                conversation.starts_with_context = true;
+            }
+            conversation
+        })
+        .chain(
+            lists
+                .into_iter()
+                .map(|(id, copies)| list_conversation(me, started, &id, copies)),
+        )
+        .collect();
+    found.sort_by(|a, b| b.latest().cmp(&a.latest()).then_with(|| a.key.cmp(&b.key)));
+    found
+}
+
+fn list_conversation(
+    me: &Account,
+    started: &BTreeSet<String>,
+    id: &str,
+    copies: Vec<Message>,
+) -> Conversation {
+    let held: Vec<&Message> = copies.iter().collect();
+    let mut thread = without_duplicates(&held);
+    thread.sort_by_key(|message| message.date);
+    let list = thread
+        .iter()
+        .rev()
+        .find_map(|message| message.mailing_list.clone())
+        .unwrap_or_else(|| List {
+            id: id.to_string(),
+            name: id.to_string(),
+            post: None,
+        });
+    let in_inbox = held.iter().any(|message| {
+        message.in_inbox()
+            || message
+                .message_id
+                .as_ref()
+                .is_some_and(|id| started.contains(id))
+    });
+    let mut found = conversation(
+        format!("{}\u{1F}list\u{1F}{id}", me.key()),
+        me,
+        None,
+        thread,
+        in_inbox,
+    );
+    if let Some(post) = &list.post {
+        found.members.retain(|member| !member.is(post));
+    }
+    found.title = list.name.clone();
+    found.list = Some(list);
+    found.flagged = held.iter().any(|message| message.flagged);
+    found.copies = held.into_iter().map(Copy::of).collect();
+    found
+}
+
+fn threads(me: &Account, started: &BTreeSet<String>, messages: Vec<Message>) -> Vec<Conversation> {
     let mut parent: Vec<usize> = (0..messages.len()).collect();
     let mut owner: HashMap<&str, usize> = HashMap::new();
     for (index, message) in messages.iter().enumerate() {
@@ -28,7 +125,7 @@ pub(crate) fn conversations(
         let root = find(&mut parent, index);
         groups.entry(root).or_default().push(index);
     }
-    let mut found: Vec<Conversation> = groups
+    groups
         .into_values()
         .flat_map(|members| {
             let copies: Vec<&Message> = members.iter().map(|&i| &messages[i]).collect();
@@ -36,9 +133,7 @@ pub(crate) fn conversations(
             thread.sort_by_key(|message| message.date);
             branches(me, started, thread, &copies)
         })
-        .collect();
-    found.sort_by(|a, b| b.latest().cmp(&a.latest()).then_with(|| a.key.cmp(&b.key)));
-    found
+        .collect()
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -271,6 +366,7 @@ fn conversation(
         key,
         account: me.key(),
         title,
+        list: None,
         members,
         messages: context.into_iter().chain(own).collect(),
         starts_with_context,
@@ -327,6 +423,7 @@ pub(crate) mod tests {
             partial: false,
             html: false,
             list: false,
+            mailing_list: None,
             flagged: false,
             reaction: None,
             invite: None,
@@ -634,5 +731,61 @@ pub(crate) mod tests {
             keys_and_uids(&conversations(&account(), &BTreeSet::new(), thread)),
             [vec![1, 2], vec![2, 3]]
         );
+    }
+
+    fn listed(mut message: Message) -> Message {
+        message.mailing_list = Some(List {
+            id: "hiking.example.org".into(),
+            name: "Hiking Club".into(),
+            post: Some("hiking@example.org".into()),
+        });
+        message
+    }
+
+    #[test]
+    fn a_mailing_list_reads_as_one_conversation_named_for_the_list() {
+        let first = addressed(
+            listed(message("a", &[], "ana@example.com", 1)),
+            &["hiking@example.org"],
+            &[],
+        );
+        let unrelated = addressed(
+            listed(message("b", &[], "ben@example.com", 2)),
+            &["hiking@example.org"],
+            &[],
+        );
+        let mut mine = addressed(message("c", &["a"], ME, 3), &["hiking@example.org"], &[]);
+        mine.mailbox = "INBOX.Sent".into();
+        let found = conversations(&account(), &BTreeSet::new(), vec![first, unrelated, mine]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "Hiking Club");
+        assert_eq!(found[0].messages.len(), 3);
+        assert!(found[0].list.is_some());
+        assert!(
+            !found[0]
+                .members
+                .iter()
+                .any(|member| member.is("hiking@example.org"))
+        );
+    }
+
+    #[test]
+    fn a_private_answer_to_a_list_post_starts_its_own_conversation() {
+        let post = addressed(
+            listed(message("a", &[], "ana@example.com", 1)),
+            &["hiking@example.org"],
+            &[],
+        );
+        let mut answer = addressed(message("b", &["a"], ME, 2), &["ana@example.com"], &[]);
+        answer.mailbox = "INBOX.Sent".into();
+        let found = conversations(&account(), &BTreeSet::new(), vec![post, answer]);
+        assert_eq!(found.len(), 2);
+        let private = found
+            .iter()
+            .find(|c| c.list.is_none())
+            .expect("the private answer");
+        assert!(private.starts_with_context);
+        assert_eq!(private.messages[0].message_id.as_deref(), Some("<a>"));
+        assert_eq!(private.copies.len(), 1);
     }
 }

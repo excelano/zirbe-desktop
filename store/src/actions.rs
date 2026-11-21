@@ -73,6 +73,7 @@ mod tests {
             key: "k".into(),
             account: "me@example.org".into(),
             title: "Lunch".into(),
+            list: None,
             members: Vec::new(),
             unread: 0,
             in_inbox: true,

@@ -26,6 +26,16 @@ pub fn reply(
     let Some(latest) = target.or(conversation.last()) else {
         return draft;
     };
+    if conversation.list.is_some() {
+        draft.subject = format!("Re: {}", subject::normalize(&latest.subject))
+            .trim()
+            .to_string();
+    }
+    let to_list = conversation
+        .list
+        .as_ref()
+        .filter(|_| target.is_none())
+        .and_then(|list| list.post.clone());
     let mut placed: HashSet<String> = std::iter::once(&account.address)
         .chain(&account.aliases)
         .map(|address| address.trim().to_lowercase())
@@ -35,14 +45,21 @@ pub fn reply(
         .as_ref()
         .is_some_and(|from| account.owns(&from.address));
     let first = if from_me { None } else { latest.from.as_ref() };
-    for person in first.into_iter().chain(&latest.to) {
-        if placed.insert(person.address.to_lowercase()) {
-            draft.to.push(person.clone());
+    if let Some(post) = to_list {
+        draft.to.push(Person {
+            name: None,
+            address: post,
+        });
+    } else {
+        for person in first.into_iter().chain(&latest.to) {
+            if placed.insert(person.address.to_lowercase()) {
+                draft.to.push(person.clone());
+            }
         }
-    }
-    for person in &latest.cc {
-        if placed.insert(person.address.to_lowercase()) {
-            draft.cc.push(person.clone());
+        for person in &latest.cc {
+            if placed.insert(person.address.to_lowercase()) {
+                draft.cc.push(person.clone());
+            }
         }
     }
     if draft.to.is_empty() && draft.cc.is_empty() {
@@ -210,6 +227,15 @@ pub fn reaction(
     emoji: &str,
 ) -> Draft {
     let mut draft = reply(conversation, account, emoji.to_string(), None);
+    if conversation.list.is_some()
+        && let Some(author) = target
+            .from
+            .as_ref()
+            .filter(|from| !account.owns(&from.address))
+    {
+        draft.to = vec![author.clone()];
+        draft.cc.clear();
+    }
     if let Some(id) = &target.message_id {
         draft.references = target.references.clone();
         if draft.references.last() != Some(id) {
@@ -276,6 +302,7 @@ mod tests {
             key: "k".into(),
             account: "me@example.org".into(),
             title: "Lunch".into(),
+            list: None,
             members: Vec::new(),
             messages,
             starts_with_context: false,
@@ -419,5 +446,38 @@ mod tests {
         let text = String::from_utf8_lossy(&raw);
         assert!(text.contains("Content-Disposition: reaction"));
         assert!(text.contains("X-Zirbe-Reaction:"));
+    }
+
+    #[test]
+    fn a_reply_in_a_list_goes_to_the_list_and_a_reaction_to_the_author() {
+        let mut post = message("a", &[], "ana@example.com", 1);
+        post.subject = "Saturday ridge walk".into();
+        post.to = vec![Person {
+            name: None,
+            address: "hiking@example.org".into(),
+        }];
+        let mut thread = conversation(vec![post.clone()]);
+        thread.title = "Hiking Club".into();
+        thread.list = Some(crate::model::List {
+            id: "hiking.example.org".into(),
+            name: "Hiking Club".into(),
+            post: Some("hiking@example.org".into()),
+        });
+        let draft = super::reply(&thread, &account(), "Count me in".into(), None);
+        let to: Vec<&str> = draft
+            .to
+            .iter()
+            .map(|person| person.address.as_str())
+            .collect();
+        assert_eq!(to, ["hiking@example.org"]);
+        assert!(draft.cc.is_empty());
+        assert_eq!(draft.subject, "Re: Saturday ridge walk");
+        let reaction = super::reaction(&thread, &account(), &post, "👍");
+        let to: Vec<&str> = reaction
+            .to
+            .iter()
+            .map(|person| person.address.as_str())
+            .collect();
+        assert_eq!(to, ["ana@example.com"]);
     }
 }

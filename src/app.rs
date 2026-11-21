@@ -2116,10 +2116,10 @@ impl App {
                         .map(|person| person.display())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    let members = if members.is_empty() {
-                        "Only you".to_string()
-                    } else {
-                        members
+                    let members = match &conversation.list {
+                        Some(list) => list.post.clone().unwrap_or_else(|| list.id.clone()),
+                        None if members.is_empty() => "Only you".to_string(),
+                        None => members,
                     };
                     ui.add(
                         egui::Label::new(

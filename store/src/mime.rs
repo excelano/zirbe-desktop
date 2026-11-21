@@ -88,6 +88,7 @@ pub(crate) fn parse(fetched: &Fetched<'_>) -> Option<Message> {
                 HeaderName::ListId | HeaderName::ListUnsubscribe
             )
         }),
+        mailing_list: content::mailing_list(&headers),
         flagged: false,
         reaction: content::reaction(&headers),
         invite: content::invite(&headers),

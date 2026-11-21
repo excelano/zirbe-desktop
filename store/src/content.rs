@@ -3,7 +3,7 @@
 
 use mail_parser::{MessagePart, PartRole};
 
-use crate::model::{Invite, Original, Outgoing};
+use crate::model::{Invite, List, Original, Outgoing};
 
 pub(crate) fn text_of(message: &mail_parser::Message<'_>) -> String {
     if let Some(text) = message.body_text(0)
@@ -114,6 +114,40 @@ pub(crate) fn attachment(raw: &[u8], index: usize, name: &str) -> Option<Vec<u8>
     Some(part.decoded().into_owned())
 }
 
+pub(crate) fn mailing_list(message: &mail_parser::Message<'_>) -> Option<List> {
+    let listed = message.list_id()?;
+    let first = listed.first()?;
+    let id = first
+        .address()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())?
+        .trim_matches(['<', '>'])
+        .to_ascii_lowercase();
+    let name = first
+        .name()
+        .map(|name| name.trim().trim_matches('"').trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| id.clone());
+    let post = message
+        .headers()
+        .get("List-Post")
+        .map(|header| String::from_utf8_lossy(header.raw_value()).into_owned())
+        .and_then(|value| {
+            bracketed(&value)
+                .into_iter()
+                .find_map(|link| link.strip_prefix("mailto:").map(str::to_string))
+        })
+        .map(|address| {
+            address
+                .split('?')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+        })
+        .filter(|address| address.contains('@'));
+    Some(List { id, name, post })
+}
+
 fn standard_reaction(message: &mail_parser::Message<'_>) -> Option<String> {
     let root = message.root_part();
     let part = if root.is_multipart() {
@@ -147,12 +181,12 @@ pub(crate) fn original(raw: &[u8]) -> Option<Original> {
         unsubscribe: message
             .headers()
             .get("List-Unsubscribe")
-            .map(|header| unsubscribe_links(&String::from_utf8_lossy(header.raw_value())))
+            .map(|header| bracketed(&String::from_utf8_lossy(header.raw_value())))
             .unwrap_or_default(),
     })
 }
 
-fn unsubscribe_links(value: &str) -> Vec<String> {
+fn bracketed(value: &str) -> Vec<String> {
     value
         .split('<')
         .skip(1)
@@ -316,6 +350,31 @@ mod tests {
         let unanswered = "From: a@example.org\r\nContent-Type: text/plain; charset=utf-8\r\n\
             Content-Disposition: reaction\r\n\r\n\u{1F44D}\r\n";
         assert_eq!(parsed(unanswered), None);
+    }
+
+    #[test]
+    fn reads_a_lists_name_id_and_posting_address() {
+        let raw =
+            b"From: ana@example.com\r\nList-Id: \"Hiking Club\" <hiking.lists.example.org>\r\n\
+            List-Post: <mailto:Hiking@lists.example.org>\r\nSubject: Saturday\r\n\r\nWho is in?";
+        let message = mail_parser::MessageParser::default()
+            .parse(&raw[..])
+            .expect("a message");
+        assert_eq!(
+            super::mailing_list(&message),
+            Some(crate::model::List {
+                id: "hiking.lists.example.org".into(),
+                name: "Hiking Club".into(),
+                post: Some("hiking@lists.example.org".into()),
+            })
+        );
+        let bare =
+            b"From: news@example.com\r\nList-Id: <news.example.com>\r\nList-Post: NO\r\n\r\nHi";
+        let message = mail_parser::MessageParser::default()
+            .parse(&bare[..])
+            .expect("a message");
+        let list = super::mailing_list(&message).expect("a list");
+        assert_eq!((list.name.as_str(), list.post), ("news.example.com", None));
     }
 
     #[test]

@@ -171,7 +171,7 @@ pub fn show(
     };
     let reactions = reactions_of(conversation, view.pending, &me.address);
     let mut action = None;
-    let group = conversation.members.len() > 1;
+    let group = conversation.members.len() > 1 || conversation.list.is_some();
     let widest = (ui.available_width() * 0.72).min(560.0);
     let mut previous: Option<&Message> = None;
     let mut people_before: Option<BTreeSet<String>> = None;
@@ -234,7 +234,7 @@ pub fn show(
                 || message.in_reply_to.as_ref()
                     == previous.and_then(|previous| previous.message_id.as_ref());
             let among_several = before.len() > 1 || present.len() > 1;
-            if answers_previous && among_several {
+            if answers_previous && among_several && conversation.list.is_none() {
                 let joined: Vec<&String> = present.difference(before).collect();
                 let left: Vec<&String> = before.difference(&present).collect();
                 for (who, what) in [(joined, "joined"), (left, "left")] {

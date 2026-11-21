@@ -458,3 +458,38 @@ fn live_a_reaction_arrives_as_a_standard_reaction() {
         Some("\u{1F44D}")
     );
 }
+
+#[test]
+#[ignore = "needs the live test account"]
+fn live_a_newsletter_reads_as_one_conversation() {
+    let live = Live::new();
+    let issue = |label: &str, minute: u32| {
+        format!(
+            "From: Live List <list@example.org>\r\nTo: {}\r\nSubject: {} {label}\r\n\
+             Date: Mon, 16 Nov 2026 10:{minute:02}:00 +0000\r\n\
+             Message-ID: <{}-{label}@example.org>\r\n\
+             List-Id: \"Live {}\" <{}.lists.example.org>\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\nThis week's news.\r\n",
+            live.harness.account.address, live.tag, live.tag, live.tag, live.tag
+        )
+    };
+    let issues = [issue("first", 1), issue("second", 2)];
+    live.on_server(async |connection, host| {
+        for raw in &issues {
+            connection
+                .append_with(host, INBOX, raw.as_bytes(), "()")
+                .await
+                .expect("a seeded issue");
+        }
+    });
+    live.harness.store.refresh();
+    live.harness.settle();
+    let held = live.harness.held(&Scope::AllInboxes);
+    let lists: Vec<_> = held
+        .iter()
+        .filter(|conversation| conversation.title.contains(&live.tag))
+        .collect();
+    assert_eq!(lists.len(), 1);
+    assert_eq!(lists[0].title, format!("Live {}", live.tag));
+    assert_eq!(lists[0].messages.len(), 2);
+}
