@@ -595,3 +595,25 @@ fn marking_part_of_a_conversation_read_leaves_the_rest_unread() {
     assert!(inbox[&1].seen);
     assert!(!inbox[&2].seen);
 }
+
+#[test]
+fn a_message_over_the_servers_size_limit_is_refused_before_it_goes() {
+    let harness = signed_in(|_| {});
+    harness.server.state().size_limit = Some(200);
+    let refused = harness
+        .store
+        .send(draft(&harness))
+        .recv_timeout(WAIT)
+        .expect("a send reply");
+    assert!(refused.is_err_and(|error| error.contains("accepts up to 0.0 MB")));
+    assert!(harness.server.state().sent.is_empty());
+    let harness = signed_in(|_| {});
+    harness.server.state().size_limit = Some(1_000_000);
+    harness
+        .store
+        .send(draft(&harness))
+        .recv_timeout(WAIT)
+        .expect("a send reply")
+        .expect("a message under the limit");
+    assert_eq!(harness.server.state().sent.len(), 1);
+}

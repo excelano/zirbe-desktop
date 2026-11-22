@@ -39,6 +39,7 @@ pub(crate) trait Server: Send + Sync + 'static {
         to: &[String],
         raw: &[u8],
     ) -> impl Future<Output = Result<(), NotSent>> + Send;
+    fn size_limit(&self, account: &Account) -> impl Future<Output = Option<u64>> + Send;
 }
 
 pub(crate) trait Session: Sized + Send {
@@ -164,5 +165,9 @@ impl Server for Live {
         raw: &[u8],
     ) -> Result<(), NotSent> {
         smtp::send(account, password, from, to, raw).await
+    }
+
+    async fn size_limit(&self, account: &Account) -> Option<u64> {
+        smtp::size_limit(account).await
     }
 }

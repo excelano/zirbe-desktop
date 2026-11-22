@@ -66,6 +66,7 @@ pub(crate) struct State {
     pub sent: Vec<Vec<u8>>,
     pub failing: BTreeSet<&'static str>,
     pub files_sent: bool,
+    pub size_limit: Option<u64>,
     pub keyring: BTreeMap<String, String>,
 }
 
@@ -195,6 +196,10 @@ impl Server for Fake {
 
     async fn check_smtp(&self, account: &Account, password: &str) -> Result<(), String> {
         self.check(account, password)
+    }
+
+    async fn size_limit(&self, _account: &Account) -> Option<u64> {
+        self.state().size_limit
     }
 
     async fn send(

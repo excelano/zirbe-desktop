@@ -4,7 +4,9 @@
 use std::time::Duration;
 
 use lettre::transport::smtp::authentication::Credentials;
-use lettre::transport::smtp::client::{Tls, TlsParametersBuilder};
+use lettre::transport::smtp::client::{AsyncSmtpConnection, Tls, TlsParametersBuilder};
+use lettre::transport::smtp::commands::Ehlo;
+use lettre::transport::smtp::extension::ClientId;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 
 use crate::model::Account;
@@ -66,11 +68,57 @@ pub(crate) async fn send(
         })
 }
 
+pub(crate) async fn size_limit(account: &Account) -> Option<u64> {
+    let host = account.smtp_host.trim();
+    let parameters = TlsParametersBuilder::new(host.to_string())
+        .build_rustls()
+        .ok()?;
+    let client = ClientId::default();
+    let wrapped = account.smtp_port == 465;
+    let mut connection = AsyncSmtpConnection::connect_tokio1(
+        (host, account.smtp_port),
+        Some(Duration::from_secs(30)),
+        &client,
+        wrapped.then(|| parameters.clone()),
+        None,
+    )
+    .await
+    .ok()?;
+    if !wrapped {
+        connection.starttls(parameters, &client).await.ok()?;
+    }
+    let reply = connection.command(Ehlo::new(client)).await.ok();
+    let _ = connection.quit().await;
+    reply?.message().find_map(announced_size)
+}
+
+fn announced_size(line: &str) -> Option<u64> {
+    let mut words = line.split_whitespace();
+    words
+        .next()
+        .filter(|word| word.eq_ignore_ascii_case("SIZE"))?;
+    words.next()?.parse().ok().filter(|limit| *limit > 0)
+}
+
 pub(crate) async fn check(account: &Account, password: &str) -> Result<(), String> {
     let host = account.smtp_host.trim();
     match transport(account, password)?.test_connection().await {
         Ok(true) => Ok(()),
         Ok(false) => Err(format!("{host} did not accept a connection")),
         Err(error) => Err(format!("{host}: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::announced_size;
+
+    #[test]
+    fn reads_the_size_a_server_announces() {
+        assert_eq!(announced_size("SIZE 52428800"), Some(52_428_800));
+        assert_eq!(announced_size("size 1000"), Some(1000));
+        assert_eq!(announced_size("SIZE"), None);
+        assert_eq!(announced_size("SIZE 0"), None);
+        assert_eq!(announced_size("8BITMIME"), None);
     }
 }

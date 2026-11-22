@@ -58,6 +58,10 @@ impl Server for Scratch {
         smtp::check(account, password).await
     }
 
+    async fn size_limit(&self, account: &Account) -> Option<u64> {
+        smtp::size_limit(account).await
+    }
+
     async fn send(
         &self,
         account: &Account,
@@ -495,4 +499,17 @@ fn live_a_newsletter_reads_as_one_conversation() {
     assert_eq!(lists.len(), 1);
     assert_eq!(lists[0].title, format!("Live {}", live.tag));
     assert_eq!(lists[0].messages.len(), 2);
+}
+
+#[test]
+#[ignore = "needs the live test account"]
+fn live_the_servers_size_limit_is_read() {
+    let live = Live::new();
+    let limit = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(smtp::size_limit(&live.harness.account));
+    assert!(limit.is_some_and(|limit| limit > 1_000_000), "{limit:?}");
+    eprintln!("the test server accepts {limit:?} bytes");
 }

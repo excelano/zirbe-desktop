@@ -86,6 +86,10 @@ async fn settle_changes<S: Session>(
     Ok(created)
 }
 
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+}
+
 async fn mark_answered<S: Session>(
     connection: &mut S,
     host: &str,
@@ -351,6 +355,7 @@ impl Store {
             watchers: HashMap::new(),
             locked: BTreeSet::new(),
             written: std::sync::Mutex::new(HashMap::new()),
+            size_limits: HashMap::new(),
         };
         std::thread::Builder::new()
             .name("mail sync".into())
@@ -648,6 +653,7 @@ struct Worker<S: Server> {
     watchers: HashMap<String, tokio::task::JoinHandle<()>>,
     locked: BTreeSet<String>,
     written: std::sync::Mutex<HashMap<String, u64>>,
+    size_limits: HashMap<String, u64>,
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
@@ -1246,6 +1252,27 @@ impl<S: Server> Worker<S> {
             }
         };
         let raw = message.formatted();
+        let limit = match self.size_limits.get(&account.key()) {
+            Some(limit) => Some(*limit),
+            None => {
+                let limit = self.server.size_limit(&account).await;
+                if let Some(limit) = limit {
+                    self.size_limits.insert(account.key(), limit);
+                }
+                limit
+            }
+        };
+        if let Some(limit) = limit
+            && raw.len() as u64 > limit
+        {
+            let _ = reply.send(Err(format!(
+                "the message is {} and {} accepts up to {}",
+                megabytes(raw.len() as u64),
+                account.smtp_host.trim(),
+                megabytes(limit)
+            )));
+            return;
+        }
         let envelope = message.envelope();
         let from = envelope.from().map(ToString::to_string);
         let to: Vec<String> = envelope.to().iter().map(ToString::to_string).collect();
