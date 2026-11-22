@@ -1,3 +1,12 @@
+zirbe (0.16.0) unstable; urgency=medium
+
+  * Always show images from a sender or a whole domain you choose, and take it back in Settings
+  * Undo send in Settings holds a message for a few seconds after Send, with an Undo
+  * A message is marked read when it comes into view, not the whole conversation on opening
+  * A message larger than the server accepts is refused before the upload, with both sizes
+
+ -- David M. Anderson <david.anderson@excelano.com>  Sat, 21 Nov 2026 18:03:21 -0600
+
 zirbe (0.15.0) unstable; urgency=medium
 
   * Checking for mail no longer rewrites Zirbe's cache when nothing has changed, sparing the disk several gigabytes of writes a day
