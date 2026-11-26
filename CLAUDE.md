@@ -1,12 +1,12 @@
 # CLAUDE.md
 
 Zirbe for the Linux desktop: an IMAP and SMTP account read as conversations, an
-egui application. It is the desktop sibling of excelano/zirbe-ios, the iPhone and
-iPad app, and keeps that app's model and principles. A conversation is an email
-thread named by its subject, defined for both apps in zirbe-ios's
-`CONVERSATIONS.md` (https://github.com/excelano/zirbe-ios/blob/main/CONVERSATIONS.md,
-cloned beside this repo at `../zirbe-ios`); read it before changing threading or
-reactions, and change it with them. Only the email standards are implemented,
+egui application. It is the primary Zirbe app: a feature, and any rule both
+apps follow, is settled here first, and excelano/zirbe-ios, the iPhone and iPad
+app (cloned beside this repo at `../zirbe-ios`), follows it with the same model
+and principles. A conversation is an email thread named by its subject, defined
+for both apps in `CONVERSATIONS.md`; read it before changing threading,
+reactions or the kinds notification rules match, and change it with them. Only the email standards are implemented,
 and the only network destinations are the user's own mail servers, and a
 message's image sources once the user chooses Show Images for it.
 

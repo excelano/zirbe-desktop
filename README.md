@@ -4,13 +4,13 @@ Zirbe is an email client that reads like a texting app while keeping real email
 underneath. A conversation is an email thread, not a person, shown like a named
 group chat, with the subject as the title, the people on the thread as the
 members, and each message as a bubble in time order. Both Zirbe apps follow the
-same [definition of a conversation](https://github.com/excelano/zirbe-ios/blob/main/CONVERSATIONS.md),
+same [definition of a conversation](CONVERSATIONS.md),
 which says how messages are grouped, when a private reply starts a conversation
 of its own, and how reactions travel. Starting a new conversation means naming
 it, and that name is the subject.
 
-This is the desktop sibling of the [Zirbe app for iPhone and iPad](https://github.com/excelano/zirbe-ios),
-with the same principles. It speaks only the email standards (IMAP, SMTP and
+This is the primary Zirbe app. The [Zirbe app for iPhone and iPad](https://github.com/excelano/zirbe-ios)
+follows it, with the same principles. It speaks only the email standards (IMAP, SMTP and
 MIME), has no backend and no telemetry, and connects to nothing but the mail
 servers you sign in to.
 
