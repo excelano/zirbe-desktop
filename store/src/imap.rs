@@ -174,6 +174,12 @@ impl Connection {
                                 .map(mime::attachment_names)
                                 .unwrap_or_default(),
                             html: fetch.bodystructure().is_some_and(mime::has_html),
+                            parts: fetch
+                                .bodystructure()
+                                .map(mime::parts_of)
+                                .unwrap_or_default(),
+                            encrypted: fetch.bodystructure().is_some_and(mime::is_encrypted),
+                            notice: fetch.bodystructure().is_some_and(mime::is_notice),
                         },
                         arrived,
                     })

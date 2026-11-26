@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use chrono::{DateTime, Duration, Local, NaiveTime, TimeZone, Utc};
 use zirbe_store::{
-    Account, Arrival, Change, Conversation, Copy, Draft, FolderInfo, MailSource, Message, Person,
-    Reply, Role, Scope, Status,
+    Account, Alert, Arrival, Change, Conversation, Copy, Draft, FolderInfo, MailSource, Message,
+    Person, Reply, Role, Scope, Status,
 };
 
 const ME: &str = "sam@example.com";
@@ -100,6 +100,7 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
                 reaction: None,
                 invite: None,
                 waiting: false,
+                kinds: Vec::new(),
             }
         })
         .collect();
@@ -115,6 +116,7 @@ fn conversation(key: &str, title: &str, members: Vec<Person>, lines: Vec<Line>) 
         in_inbox: false,
         flagged: false,
         pinned: false,
+        alert: Alert::Default,
         copies: Vec::new(),
     };
     settle(&mut found);
@@ -418,6 +420,7 @@ impl MailSource for Demo {
             reaction: draft.reaction.clone(),
             invite: None,
             waiting: false,
+            kinds: Vec::new(),
         };
         match key.and_then(|key| conversations.iter_mut().find(|c| c.key == key)) {
             Some(conversation) => {
@@ -485,6 +488,7 @@ impl MailSource for Demo {
                     }
                 }
                 Change::Pin(on) => conversation.pinned = *on,
+                Change::Alert(alert) => conversation.alert = *alert,
                 Change::Delete => conversation
                     .messages
                     .retain(|message| !scope.shows(&message.mailbox)),

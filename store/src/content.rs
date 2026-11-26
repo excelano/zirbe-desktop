@@ -3,6 +3,7 @@
 
 use mail_parser::{MessagePart, PartRole};
 
+use crate::kinds::{self, Facts, Part};
 use crate::model::{Invite, List, Original, Outgoing};
 
 pub(crate) fn text_of(message: &mail_parser::Message<'_>) -> String {
@@ -36,6 +37,8 @@ fn markup(text: &str) -> bool {
     start.starts_with("<!doctype html") || start.starts_with("<html") || start.contains("<body")
 }
 
+pub(crate) const REACTION_MIME: &str = "text/vnd.google.email-reaction+json";
+
 pub(crate) fn reaction(message: &mail_parser::Message<'_>) -> Option<String> {
     if let Some(value) = message.headers().value("X-Zirbe-Reaction")
         && let Some(text) = value.as_text()
@@ -65,6 +68,78 @@ pub(crate) fn reaction(message: &mail_parser::Message<'_>) -> Option<String> {
         .and_then(|part| part.text().map(|text| text.into_owned()))
         .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|value| value.get("emoji")?.as_str().map(str::to_string))
+}
+
+fn header_text(message: &mail_parser::Message<'_>, name: &str) -> Option<String> {
+    message.headers().get(name).map(|header| {
+        String::from_utf8_lossy(header.raw_value())
+            .trim()
+            .to_ascii_lowercase()
+    })
+}
+
+fn mime_of(part: &MessagePart<'_>) -> String {
+    part.content_type().map_or_else(
+        || "text/plain".to_string(),
+        |content_type| {
+            format!(
+                "{}/{}",
+                content_type.ctype(),
+                content_type.subtype().unwrap_or_default()
+            )
+            .to_ascii_lowercase()
+        },
+    )
+}
+
+fn attached(part: &MessagePart<'_>) -> bool {
+    part.content_disposition()
+        .is_some_and(|disposition| disposition.ctype().eq_ignore_ascii_case("attachment"))
+}
+
+fn part_of(part: &MessagePart<'_>) -> Option<Part> {
+    let mime = mime_of(part);
+    let is_body = matches!(mime.as_str(), "text/plain" | "text/html") && !attached(part);
+    if part.is_multipart() || is_body || mime == REACTION_MIME {
+        return None;
+    }
+    Some(Part {
+        name: part.attachment_name().map(str::to_string),
+        embedded: part.content_id().is_some() && !attached(part),
+        size: part.decoded_len(),
+        method: part
+            .content_type()
+            .and_then(|content_type| content_type.attribute("method"))
+            .map(str::to_ascii_uppercase),
+        mime,
+    })
+}
+
+pub(crate) fn facts(message: &mail_parser::Message<'_>, text: &str) -> Facts {
+    let parts: Vec<Part> = message.parts().filter_map(|part| part_of(&part)).collect();
+    let root = message.root_part();
+    let root_mime = mime_of(&root);
+    let smime_type = root
+        .content_type()
+        .and_then(|content_type| content_type.attribute("smime-type"));
+    let precedence = header_text(message, "Precedence");
+    let auto_submitted = header_text(message, "Auto-Submitted");
+    Facts {
+        text: !text.trim().is_empty(),
+        html: has_html(message),
+        newsletter: message.list_id().is_some()
+            || message.headers().get("List-Unsubscribe").is_some()
+            || matches!(precedence.as_deref(), Some("bulk" | "list")),
+        notice: root_mime == "multipart/report"
+            || parts
+                .iter()
+                .any(|part| part.mime == "message/disposition-notification")
+            || auto_submitted.is_some_and(|value| value != "no"),
+        encrypted: root_mime == "multipart/encrypted"
+            || (kinds::is_smime(&root_mime) && kinds::is_encrypted_smime(smime_type)),
+        reaction: reaction(message).is_some(),
+        parts,
+    }
 }
 
 pub(crate) fn invite(message: &mail_parser::Message<'_>) -> Option<Invite> {

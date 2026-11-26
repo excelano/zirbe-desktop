@@ -4,6 +4,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::kinds::Kind;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
     pub address: String,
@@ -105,6 +107,14 @@ pub enum Scope {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Alert {
+    #[default]
+    Default,
+    Always,
+    Mute,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
     Archive,
@@ -115,6 +125,7 @@ pub enum Change {
     Flag(bool),
     Read(bool),
     Pin(bool),
+    Alert(Alert),
 }
 
 impl Change {
@@ -187,6 +198,8 @@ pub struct Message {
     pub invite: Option<Invite>,
     #[serde(default)]
     pub waiting: bool,
+    #[serde(default)]
+    pub kinds: Vec<Kind>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +242,7 @@ pub struct Conversation {
     pub in_inbox: bool,
     pub flagged: bool,
     pub pinned: bool,
+    pub alert: Alert,
     pub copies: Vec<Copy>,
 }
 
@@ -314,6 +328,8 @@ pub struct Arrival {
     pub account: String,
     pub message_id: Option<String>,
     pub sender: String,
+    pub address: Option<String>,
     pub subject: String,
     pub text: String,
+    pub kinds: Vec<Kind>,
 }

@@ -10,7 +10,7 @@ use std::path::Path;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Account, FolderInfo, Message};
+use crate::model::{Account, Alert, FolderInfo, Message};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Mailbox {
@@ -44,6 +44,7 @@ pub(crate) struct AccountData {
     pub unfiled: Vec<Message>,
     pub started: BTreeSet<String>,
     pub pinned: BTreeSet<String>,
+    pub alerts: BTreeMap<String, Alert>,
     pub unsent: Vec<UnsentCopy>,
     pub blocked: BTreeSet<String>,
     pub transcripts: BTreeMap<String, String>,

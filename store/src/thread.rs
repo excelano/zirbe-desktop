@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::model::{Account, Conversation, Copy, List, Message, Person};
+use crate::model::{Account, Alert, Conversation, Copy, List, Message, Person};
 use crate::subject;
 
 const ORPHAN_WINDOW_DAYS: i64 = 30;
@@ -435,6 +435,7 @@ fn conversation(
         in_inbox,
         flagged: false,
         pinned: false,
+        alert: Alert::Default,
         copies: Vec::new(),
     }
 }
@@ -489,6 +490,7 @@ pub(crate) mod tests {
             reaction: None,
             invite: None,
             waiting: false,
+            kinds: Vec::new(),
         }
     }
 

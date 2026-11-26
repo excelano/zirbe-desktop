@@ -34,7 +34,7 @@ pub(crate) fn targets(
             })
             .into_iter()
             .collect(),
-        Change::Pin(_) => Vec::new(),
+        Change::Pin(_) | Change::Alert(_) => Vec::new(),
     };
     chosen
         .into_iter()
@@ -79,6 +79,7 @@ mod tests {
             in_inbox: true,
             flagged: false,
             pinned: false,
+            alert: crate::model::Alert::Default,
             copies: messages.iter().map(crate::model::Copy::of).collect(),
             messages,
             starts_with_context: false,

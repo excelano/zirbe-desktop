@@ -12,8 +12,8 @@ use eframe::egui::{
     ScrollArea, TextEdit, Ui, UiBuilder, pos2,
 };
 use zirbe_store::{
-    Account, Change, Conversation, Draft, FolderInfo, INBOX, MailSource, Message, Outgoing, Person,
-    Query, Reply, Role, Scope, Status, Store,
+    Account, Alert, Arrival, Change, Conversation, Draft, FolderInfo, INBOX, Kind, MailSource,
+    Message, Outgoing, Person, Query, Reply, Role, Scope, Status, Store,
 };
 
 use crate::audio::{self, Audio};
@@ -32,7 +32,7 @@ use crate::notify::Notifier;
 use crate::page::Page;
 use crate::palette::{self, Palette};
 use crate::people;
-use crate::settings::Settings;
+use crate::settings::{Settings, Who};
 use crate::signin::{Outcome, SignIn};
 use crate::system::Clock;
 use crate::transcribe;
@@ -103,6 +103,7 @@ struct Reacting {
 
 const COLUMN: f32 = 720.0;
 const UNDO: Duration = Duration::from_secs(5);
+const SETTINGS_MARGIN: f32 = 120.0;
 
 struct Sending {
     conversation: String,
@@ -324,6 +325,7 @@ pub struct App {
     reaction_sends: Vec<(String, Reply)>,
     auto_opened: Option<String>,
     adding_account: bool,
+    new_favorite: String,
     sign_in: SignIn,
     marked: (String, HashSet<(String, u32)>),
     #[cfg(feature = "screenshot")]
@@ -384,6 +386,7 @@ impl App {
             reaction_sends: Vec::new(),
             auto_opened: None,
             adding_account: false,
+            new_favorite: String::new(),
             sign_in: SignIn::default(),
             marked: (String::new(), HashSet::new()),
             #[cfg(feature = "screenshot")]
@@ -866,6 +869,7 @@ impl App {
                     });
                 }
                 let mut pending = None;
+                let mut favorite = None;
                 let accounts = self.source.mail().accounts();
                 let colours: HashMap<String, egui::Color32> = accounts
                     .iter()
@@ -929,6 +933,15 @@ impl App {
                                     } else {
                                         vec![(*conversation).clone()]
                                     };
+                                if let [conversation] = targets.as_slice() {
+                                    if let Some(change) = alert_menu(ui, conversation.alert) {
+                                        pending = Some((targets.clone(), change));
+                                    }
+                                    if let Some(address) = self.favorites_menu(ui, conversation) {
+                                        favorite = Some(address);
+                                    }
+                                    ui.separator();
+                                }
                                 if let Some(change) = self.actions_menu(ui, &targets) {
                                     pending = Some((targets, change));
                                 }
@@ -939,12 +952,23 @@ impl App {
                 if let Some((targets, change)) = pending {
                     self.apply(targets, change);
                 }
+                if let Some(address) = favorite {
+                    self.toggle_favorite(&address);
+                }
             });
     }
 
-    fn news(&mut self, ctx: &egui::Context, conversations: &[Conversation]) {
+    fn news(&mut self, ctx: &egui::Context) {
         let notifier = self.notifier.get_or_insert_with(|| Notifier::new(ctx));
         let arrivals = self.source.mail().arrivals();
+        let conversations = self.source.mail().conversations();
+        let arrivals: Vec<Arrival> = arrivals
+            .into_iter()
+            .filter(|arrival| {
+                self.settings
+                    .notifies(arrival, alert_for(&conversations, arrival))
+            })
+            .collect();
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(false));
         if self.settings.notify && !focused && !arrivals.is_empty() {
             notifier.post(&arrivals);
@@ -1280,6 +1304,49 @@ impl App {
                 .iter()
                 .any(|folder| &folder.name == name && folder.role == Some(role))
         })
+    }
+
+    fn favorites_menu(&self, ui: &mut Ui, conversation: &Conversation) -> Option<String> {
+        let account = self.account(&conversation.account);
+        let people: Vec<&Person> = conversation
+            .members
+            .iter()
+            .filter(|person| {
+                account
+                    .as_ref()
+                    .is_none_or(|own| !own.owns(&person.address))
+            })
+            .collect();
+        let mut toggled = None;
+        ui.add_enabled_ui(!people.is_empty(), |ui| {
+            ui.menu_button("Favorites", |ui| {
+                for person in people {
+                    let address = person.address.trim().to_lowercase();
+                    let mut favored = self.settings.is_favorite(&address);
+                    let listed = self.settings.favorites.contains(&address);
+                    let label = match &person.name {
+                        Some(name) => format!("{name} ({address})"),
+                        None => address.clone(),
+                    };
+                    let response = ui
+                        .add_enabled(listed || !favored, egui::Checkbox::new(&mut favored, label))
+                        .on_disabled_hover_text("In Favorites by its domain");
+                    if response.clicked() {
+                        toggled = Some(address);
+                    }
+                }
+            });
+        });
+        toggled
+    }
+
+    fn toggle_favorite(&mut self, address: &str) {
+        if self.settings.is_favorite(address) {
+            self.settings.unfavor(address);
+        } else {
+            self.settings.favor(address);
+        }
+        self.settings.save();
     }
 
     fn actions_menu(&self, ui: &mut Ui, targets: &[Conversation]) -> Option<Change> {
@@ -2022,6 +2089,7 @@ impl App {
                 let mut block = None;
                 let mut sweep = None;
                 let mut unsubscribe = None;
+                let mut favorite = None;
                 ui.scope_builder(
                     UiBuilder::new()
                         .max_rect(Rect::from_min_max(
@@ -2066,7 +2134,14 @@ impl App {
                                 ui.close();
                             }
                             ui.separator();
-                            chosen = self.actions_menu(ui, std::slice::from_ref(&conversation));
+                            chosen = alert_menu(ui, conversation.alert);
+                            if let Some(address) = self.favorites_menu(ui, &conversation) {
+                                favorite = Some(address);
+                            }
+                            ui.separator();
+                            chosen = self
+                                .actions_menu(ui, std::slice::from_ref(&conversation))
+                                .or(chosen.take());
                         })
                         .response
                         .on_hover_text("More actions");
@@ -2098,6 +2173,9 @@ impl App {
                 );
                 if let Some(change) = chosen {
                     self.apply(vec![conversation.clone()], change);
+                }
+                if let Some(address) = favorite {
+                    self.toggle_favorite(&address);
                 }
                 if find {
                     self.open_find();
@@ -3029,6 +3107,7 @@ impl App {
         let mut open = true;
         let mut sign_out = None;
         let mut settings = self.settings.clone();
+        let height = ctx.content_rect().height() - SETTINGS_MARGIN;
         egui::Window::new("Settings")
             .open(&mut open)
             .collapsible(false)
@@ -3036,108 +3115,116 @@ impl App {
             .default_width(460.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label(RichText::new("Reading").strong().color(palette.text));
-                ui.checkbox(&mut settings.open_html, "Open HTML email in Web View");
-                ui.checkbox(&mut settings.load_images, "Load remote images");
-                if !settings.load_images && !settings.trusted_images.is_empty() {
-                    ui.label(
-                        RichText::new("Images always load from:")
-                            .size(12.0)
-                            .color(palette.secondary),
-                    );
-                    let mut untrusted = None;
-                    for (index, trusted) in settings.trusted_images.iter().enumerate() {
+                ScrollArea::vertical()
+                    .max_height(height)
+                    .min_scrolled_height(height)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Reading").strong().color(palette.text));
+                        ui.checkbox(&mut settings.open_html, "Open HTML email in Web View");
+                        ui.checkbox(&mut settings.load_images, "Load remote images");
+                        if !settings.load_images && !settings.trusted_images.is_empty() {
+                            ui.label(
+                                RichText::new("Images always load from:")
+                                    .size(12.0)
+                                    .color(palette.secondary),
+                            );
+                            let mut untrusted = None;
+                            for (index, trusted) in settings.trusted_images.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(12.0);
+                                    ui.label(trusted);
+                                    if ui
+                                        .small_button("✕")
+                                        .on_hover_text("Stop loading its images without asking")
+                                        .clicked()
+                                    {
+                                        untrusted = Some(index);
+                                    }
+                                });
+                            }
+                            if let Some(index) = untrusted {
+                                settings.trusted_images.remove(index);
+                            }
+                        }
+                        ui.checkbox(&mut settings.notify, "New mail notifications");
+                        ui.add_enabled_ui(settings.notify, |ui| {
+                            self.notify_rules(ui, &mut settings);
+                        });
                         ui.horizontal(|ui| {
-                            ui.add_space(12.0);
-                            ui.label(trusted);
-                            if ui
-                                .small_button("✕")
-                                .on_hover_text("Stop loading its images without asking")
-                                .clicked()
-                            {
-                                untrusted = Some(index);
-                            }
+                            ui.label("Undo send");
+                            let label = |seconds: u8| match seconds {
+                                0 => "Off".to_string(),
+                                seconds => format!("{seconds} seconds"),
+                            };
+                            egui::ComboBox::from_id_salt("undo send")
+                                .selected_text(label(settings.undo_seconds))
+                                .show_ui(ui, |ui| {
+                                    for seconds in [0, 5, 10, 20] {
+                                        ui.selectable_value(&mut settings.undo_seconds, seconds, label(seconds));
+                                    }
+                                });
                         });
-                    }
-                    if let Some(index) = untrusted {
-                        settings.trusted_images.remove(index);
-                    }
-                }
-                ui.checkbox(&mut settings.notify, "New mail notifications");
-                ui.horizontal(|ui| {
-                    ui.label("Undo send");
-                    let label = |seconds: u8| match seconds {
-                        0 => "Off".to_string(),
-                        seconds => format!("{seconds} seconds"),
-                    };
-                    egui::ComboBox::from_id_salt("undo send")
-                        .selected_text(label(settings.undo_seconds))
-                        .show_ui(ui, |ui| {
-                            for seconds in [0, 5, 10, 20] {
-                                ui.selectable_value(&mut settings.undo_seconds, seconds, label(seconds));
-                            }
+                        ui.horizontal(|ui| {
+                            ui.label("Preview");
+                            let names = ["None", "1 line", "2 lines", "3 lines"];
+                            egui::ComboBox::from_id_salt("preview")
+                                .selected_text(names[usize::from(settings.preview.min(3))])
+                                .show_ui(ui, |ui| {
+                                    for (lines, name) in names.iter().enumerate() {
+                                        ui.selectable_value(&mut settings.preview, lines as u8, *name);
+                                    }
+                                });
                         });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Preview");
-                    let names = ["None", "1 line", "2 lines", "3 lines"];
-                    egui::ComboBox::from_id_salt("preview")
-                        .selected_text(names[usize::from(settings.preview.min(3))])
-                        .show_ui(ui, |ui| {
-                            for (lines, name) in names.iter().enumerate() {
-                                ui.selectable_value(&mut settings.preview, lines as u8, *name);
-                            }
-                        });
-                });
-                ui.label(
-                    RichText::new("Zirbe shows the plain-text version as a chat bubble by default. Web View shows the message as the sender laid it out. Loading remote images can let a sender know you opened the message and roughly where you are, so it stays off unless you turn it on.")
-                        .size(11.0)
-                        .color(palette.secondary),
-                );
-                ui.add_space(8.0);
-                ui.separator();
-                ui.label(RichText::new("Voice messages").strong().color(palette.text));
-                if transcribe::setup().is_some() {
-                    ui.label(
-                        RichText::new("Voice messages are transcribed on this computer, and the transcript is sent as the message's text.")
-                            .size(11.0)
-                            .color(palette.secondary),
-                    );
-                } else {
-                    ui.label(
-                        RichText::new("Voice messages are sent without a transcript. To transcribe them on this computer, install the speech recognizer and its model:")
-                            .size(11.0)
-                            .color(palette.secondary),
-                    );
-                    ui.horizontal(|ui| {
-                        ui.code(transcribe::INSTALL);
-                        if ui.small_button("Copy").clicked() {
-                            ui.ctx().copy_text(transcribe::INSTALL.to_string());
+                        ui.label(
+                            RichText::new("Zirbe shows the plain-text version as a chat bubble by default. Web View shows the message as the sender laid it out. Loading remote images can let a sender know you opened the message and roughly where you are, so it stays off unless you turn it on.")
+                                .size(11.0)
+                                .color(palette.secondary),
+                        );
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.label(RichText::new("Voice messages").strong().color(palette.text));
+                        if transcribe::setup().is_some() {
+                            ui.label(
+                                RichText::new("Voice messages are transcribed on this computer, and the transcript is sent as the message's text.")
+                                    .size(11.0)
+                                    .color(palette.secondary),
+                            );
+                        } else {
+                            ui.label(
+                                RichText::new("Voice messages are sent without a transcript. To transcribe them on this computer, install the speech recognizer and its model:")
+                                    .size(11.0)
+                                    .color(palette.secondary),
+                            );
+                            ui.horizontal(|ui| {
+                                ui.code(transcribe::INSTALL);
+                                if ui.small_button("Copy").clicked() {
+                                    ui.ctx().copy_text(transcribe::INSTALL.to_string());
+                                }
+                            });
                         }
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.label(RichText::new("Accounts").strong().color(palette.text));
+                        for account in self.source.mail().accounts() {
+                            self.account_section(ui, &account, &mut sign_out);
+                            ui.separator();
+                        }
+                        if let Source::Live(store) = &self.source {
+                            if self.adding_account {
+                                if let Outcome::SignedIn = self.sign_in.show(ui, store, &palette) {
+                                    self.adding_account = false;
+                                }
+                            } else if ui.button("Add Account").clicked() {
+                                self.adding_account = true;
+                            }
+                        }
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new("Passwords stay in this computer's keyring. Mail is fetched only from your own servers.")
+                                .size(11.0)
+                                .color(palette.secondary),
+                        );
                     });
-                }
-                ui.add_space(8.0);
-                ui.separator();
-                ui.label(RichText::new("Accounts").strong().color(palette.text));
-                for account in self.source.mail().accounts() {
-                    self.account_section(ui, &account, &mut sign_out);
-                    ui.separator();
-                }
-                if let Source::Live(store) = &self.source {
-                    if self.adding_account {
-                        if let Outcome::SignedIn = self.sign_in.show(ui, store, &palette) {
-                            self.adding_account = false;
-                        }
-                    } else if ui.button("Add Account").clicked() {
-                        self.adding_account = true;
-                    }
-                }
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("Passwords stay in this computer's keyring. Mail is fetched only from your own servers.")
-                        .size(11.0)
-                        .color(palette.secondary),
-                );
             });
         if let (Some(account), Source::Live(store)) = (sign_out, &self.source) {
             if matches!(&self.scope, Scope::Mailbox { account: key, .. } if *key == account.key()) {
@@ -3151,6 +3238,74 @@ impl App {
             self.settings = settings;
         }
         self.settings_open = open;
+    }
+
+    fn notify_rules(&mut self, ui: &mut Ui, settings: &mut Settings) {
+        let palette = self.palette;
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new("Notify me about").color(palette.text));
+                egui::Grid::new("notify kinds")
+                    .num_columns(4)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        for (index, kind) in Kind::ALL.into_iter().enumerate() {
+                            ui.label(kind.label());
+                            let mut who = settings.who(kind);
+                            egui::ComboBox::from_id_salt(("notify kind", index))
+                                .selected_text(who.label())
+                                .width(90.0)
+                                .show_ui(ui, |ui| {
+                                    for choice in [Who::Everyone, Who::Favorites, Who::Nobody] {
+                                        ui.selectable_value(&mut who, choice, choice.label());
+                                    }
+                                });
+                            settings.set_who(kind, who);
+                            if index % 2 == 1 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                ui.label("Favorites:");
+                let mut unfavored = None;
+                for favorite in &settings.favorites {
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui.label(favorite);
+                        if ui
+                            .small_button("✕")
+                            .on_hover_text("Remove from Favorites")
+                            .clicked()
+                        {
+                            unfavored = Some(favorite.clone());
+                        }
+                    });
+                }
+                if let Some(favorite) = unfavored {
+                    settings.unfavor(&favorite);
+                }
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    let field = ui.add(
+                        TextEdit::singleline(&mut self.new_favorite)
+                            .hint_text("Address or domain")
+                            .desired_width(220.0),
+                    );
+                    let entered =
+                        field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+                    if (ui.button("Add").clicked() || entered) && !self.new_favorite.trim().is_empty() {
+                        settings.favor(&self.new_favorite);
+                        self.new_favorite.clear();
+                    }
+                });
+                ui.label(
+                    RichText::new("Mail still arrives; this only decides which messages notify. Favorites are addresses, or domains that match their subdomains too.")
+                        .size(11.0)
+                        .color(palette.secondary),
+                );
+            });
+        });
     }
 
     fn account_section(&mut self, ui: &mut Ui, account: &Account, sign_out: &mut Option<Account>) {
@@ -3362,7 +3517,7 @@ impl eframe::App for App {
         }
         let conversations = self.source.mail().conversations();
         self.update_matches(&conversations);
-        self.news(&ctx, &conversations);
+        self.news(&ctx);
         self.keys(&ctx, &conversations);
         let dropped = files::dropped(&ctx);
         if !dropped.is_empty() {
@@ -3392,5 +3547,118 @@ impl eframe::App for App {
         self.unsubscribe_step(&ctx);
         self.empty_window(&ctx);
         self.sweep_window(&ctx);
+    }
+}
+
+fn alert_menu(ui: &mut Ui, alert: Alert) -> Option<Change> {
+    let mut chosen = None;
+    ui.menu_button("Notifications", |ui| {
+        for (choice, label) in [
+            (Alert::Default, "Default"),
+            (Alert::Always, "Always notify"),
+            (Alert::Mute, "Mute"),
+        ] {
+            if ui.selectable_label(alert == choice, label).clicked() {
+                chosen = Some(Change::Alert(choice));
+                ui.close();
+            }
+        }
+    });
+    chosen
+}
+
+fn alert_for(conversations: &[Conversation], arrival: &Arrival) -> Alert {
+    arrival
+        .message_id
+        .as_ref()
+        .and_then(|id| {
+            conversations.iter().find(|conversation| {
+                conversation.account == arrival.account
+                    && conversation
+                        .copies
+                        .iter()
+                        .any(|copy| copy.message_id.as_ref() == Some(id))
+            })
+        })
+        .map_or(Alert::Default, |conversation| conversation.alert)
+}
+
+#[cfg(test)]
+mod tests {
+    use zirbe_store::{Alert, Arrival, Conversation, Copy};
+
+    use super::alert_for;
+
+    fn conversation(message_id: &str, alert: Alert) -> Conversation {
+        Conversation {
+            key: message_id.into(),
+            account: "me@example.com".into(),
+            title: "Hello".into(),
+            list: None,
+            members: Vec::new(),
+            messages: Vec::new(),
+            starts_with_context: false,
+            unread: 1,
+            in_inbox: true,
+            flagged: false,
+            pinned: false,
+            alert,
+            copies: vec![Copy {
+                mailbox: "INBOX".into(),
+                uid: 1,
+                message_id: Some(message_id.into()),
+                sender: None,
+                seen: false,
+                flagged: false,
+            }],
+        }
+    }
+
+    fn arrival(message_id: Option<&str>) -> Arrival {
+        Arrival {
+            account: "me@example.com".into(),
+            message_id: message_id.map(str::to_string),
+            sender: "Sender".into(),
+            address: None,
+            subject: "Hello".into(),
+            text: "Hi".into(),
+            kinds: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn alert_for_is_the_conversation_holding_the_message() {
+        let conversations = [
+            conversation("<a@x>", Alert::Mute),
+            conversation("<b@x>", Alert::Always),
+        ];
+        assert_eq!(
+            alert_for(&conversations, &arrival(Some("<b@x>"))),
+            Alert::Always
+        );
+        assert_eq!(
+            alert_for(&conversations, &arrival(Some("<a@x>"))),
+            Alert::Mute
+        );
+    }
+
+    #[test]
+    fn alert_for_looks_only_in_the_arrivals_account() {
+        let mut elsewhere = conversation("<a@x>", Alert::Mute);
+        elsewhere.account = "other@example.com".into();
+        assert_eq!(
+            alert_for(&[elsewhere], &arrival(Some("<a@x>"))),
+            Alert::Default
+        );
+    }
+
+    #[test]
+    fn alert_for_is_default_when_no_conversation_holds_it() {
+        let conversations = [conversation("<a@x>", Alert::Mute)];
+        assert_eq!(
+            alert_for(&conversations, &arrival(Some("<c@x>"))),
+            Alert::Default
+        );
+        assert_eq!(alert_for(&conversations, &arrival(None)), Alert::Default);
     }
 }

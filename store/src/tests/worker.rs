@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 
 use super::fake::{DRAFTS, Fake, SENT, SPAM, TRASH};
 use super::harness::{Harness, WAIT};
-use crate::{Account, Change, Draft, INBOX, MailSource, Person, Scope, Status};
+use crate::{
+    Account, Alert, Arrival, Change, Draft, INBOX, Kind, MailSource, Person, Scope, Status, Store,
+};
 
 const PASSWORD: &str = "right";
 const ME: &str = "me@example.org";
@@ -616,4 +618,108 @@ fn a_message_over_the_servers_size_limit_is_refused_before_it_goes() {
         .expect("a send reply")
         .expect("a message under the limit");
     assert_eq!(harness.server.state().sent.len(), 1);
+}
+
+#[test]
+fn a_reaction_arrives_as_a_reaction() {
+    let harness = signed_in(|fake| {
+        fake.deliver(INBOX, &mail("a", "ana@example.org", "Lunch", 1, None));
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    let reaction = mail("b", "Ben <Ben@Example.org>", "Re: Lunch", 2, Some("a"))
+        .replace("Subject:", "X-Zirbe-Reaction: \u{1F44D}\r\nSubject:");
+    harness.server.deliver(INBOX, &reaction);
+    let deadline = Instant::now() + WAIT;
+    let mut arrivals = Vec::new();
+    while arrivals.is_empty() && Instant::now() < deadline {
+        arrivals.extend(harness.store.arrivals());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(arrivals.len(), 1);
+    assert_eq!(arrivals[0].kinds, [Kind::Reactions]);
+    assert_eq!(arrivals[0].address.as_deref(), Some("ben@example.org"));
+}
+
+#[test]
+fn an_alert_is_kept_with_the_conversation() {
+    let harness = signed_in(|fake| {
+        fake.deliver(INBOX, &mail("a", "ana@example.org", "Lunch", 1, None));
+    });
+    let lunch = harness.held(&Scope::AllInboxes);
+    assert_eq!(lunch[0].alert, Alert::Default);
+    harness.server.take_log();
+    harness
+        .store
+        .change(&lunch, &Scope::AllInboxes, Change::Alert(Alert::Mute));
+    harness.settle();
+    assert_eq!(harness.held(&Scope::AllInboxes)[0].alert, Alert::Mute);
+    assert!(harness.server.take_log().is_empty());
+    let reloaded = Store::with_server(
+        harness.dir.join("config"),
+        harness.dir.join("cache"),
+        harness.server.clone(),
+        || {},
+    );
+    let deadline = Instant::now() + WAIT;
+    while reloaded.conversations().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(reloaded.conversations()[0].alert, Alert::Mute);
+}
+
+#[test]
+fn an_arrival_is_queued_only_once_its_conversation_is_published() {
+    let harness = signed_in(|fake| {
+        fake.deliver(INBOX, &mail("a", "ana@example.org", "Lunch", 1, None));
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    harness.server.deliver(
+        INBOX,
+        &mail("b", "ben@example.org", "Re: Lunch", 2, Some("a")),
+    );
+    let deadline = Instant::now() + WAIT;
+    let mut arrivals = Vec::new();
+    while arrivals.is_empty() && Instant::now() < deadline {
+        arrivals = harness.store.arrivals();
+        std::thread::yield_now();
+    }
+    let conversations = harness.store.conversations();
+    assert_eq!(arrivals.len(), 1);
+    assert!(conversations.iter().any(|conversation| {
+        conversation
+            .copies
+            .iter()
+            .any(|copy| copy.message_id == arrivals[0].message_id)
+    }));
+}
+
+#[test]
+fn a_withdrawn_reaction_is_not_an_arrival() {
+    let harness = signed_in(|fake| {
+        fake.deliver(INBOX, &mail("a", "ana@example.org", "Lunch", 1, None));
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    let withdrawn = mail("b", "ben@example.org", "Re: Lunch", 2, Some("a")).replace(
+        "charset=utf-8\r\n\r\nThis is b.\r\n",
+        "charset=utf-8\r\nContent-Disposition: reaction\r\n\r\n\r\n",
+    );
+    harness.server.deliver(INBOX, &withdrawn);
+    harness
+        .server
+        .deliver(INBOX, &mail("c", "cy@example.org", "Hike", 3, None));
+    let deadline = Instant::now() + WAIT;
+    let mut arrivals = Vec::new();
+    while !arrivals
+        .iter()
+        .any(|arrival: &Arrival| arrival.subject == "Hike")
+        && Instant::now() < deadline
+    {
+        arrivals.extend(harness.store.arrivals());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let subjects: Vec<&str> = arrivals
+        .iter()
+        .map(|arrival| arrival.subject.as_str())
+        .collect();
+    assert_eq!(subjects, ["Hike"]);
 }

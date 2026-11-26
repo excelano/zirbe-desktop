@@ -310,6 +310,7 @@ mod tests {
             in_inbox: true,
             flagged: false,
             pinned: false,
+            alert: crate::model::Alert::Default,
             copies: Vec::new(),
         }
     }

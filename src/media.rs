@@ -6,25 +6,7 @@ use std::sync::mpsc;
 
 use zirbe_store::{Conversation, Reply};
 
-fn ends_with_any(name: &str, extensions: &[&str]) -> bool {
-    let lower = name.to_ascii_lowercase();
-    extensions
-        .iter()
-        .any(|extension| lower.ends_with(extension))
-}
-
-pub fn is_audio(name: &str) -> bool {
-    ends_with_any(
-        name,
-        &[
-            ".m4a", ".mp3", ".aac", ".wav", ".ogg", ".oga", ".opus", ".flac",
-        ],
-    )
-}
-
-pub fn is_video(name: &str) -> bool {
-    ends_with_any(name, &[".mp4", ".mov", ".m4v", ".webm", ".3gp", ".mkv"])
-}
+pub use zirbe_store::{is_audio, is_video};
 
 pub fn poster(name: &str, bytes: Vec<u8>) -> Reply<Vec<u8>> {
     let (sender, receiver) = mpsc::channel();

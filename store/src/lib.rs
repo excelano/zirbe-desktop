@@ -11,6 +11,7 @@ mod email;
 mod folders;
 mod imap;
 mod invite;
+mod kinds;
 mod mime;
 mod model;
 mod owed;
@@ -123,8 +124,9 @@ use chrono::Utc;
 use tokio::sync::mpsc;
 
 pub use compose::{parse_people, reaction, reply};
+pub use kinds::{Kind, is_audio, is_video};
 pub use model::{
-    Account, Arrival, COLOURS, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Invite,
+    Account, Alert, Arrival, COLOURS, Change, Conversation, Copy, Draft, FolderInfo, INBOX, Invite,
     Message, Original, Outgoing, Person, Role, Scope, Status, When,
 };
 pub use presets::{Preset, for_address};
@@ -356,6 +358,7 @@ impl Store {
             locked: BTreeSet::new(),
             written: std::sync::Mutex::new(HashMap::new()),
             size_limits: HashMap::new(),
+            arrived: Vec::new(),
         };
         std::thread::Builder::new()
             .name("mail sync".into())
@@ -561,7 +564,7 @@ impl MailSource for Store {
                 .iter()
                 .flat_map(|c| actions::targets(c, scope, &change))
                 .collect();
-            if targets.is_empty() && !matches!(change, Change::Pin(_)) {
+            if targets.is_empty() && !matches!(change, Change::Pin(_) | Change::Alert(_)) {
                 continue;
             }
             if change.leaves() {
@@ -654,6 +657,7 @@ struct Worker<S: Server> {
     locked: BTreeSet<String>,
     written: std::sync::Mutex<HashMap<String, u64>>,
     size_limits: HashMap<String, u64>,
+    arrived: Vec<Arrival>,
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
@@ -960,6 +964,11 @@ impl<S: Server> Worker<S> {
                 let mut found = thread::conversations(account, &data.started, data.messages());
                 for conversation in &mut found {
                     conversation.pinned = data.pinned.contains(&conversation.key);
+                    conversation.alert = data
+                        .alerts
+                        .get(&conversation.key)
+                        .copied()
+                        .unwrap_or_default();
                 }
                 Some(found)
             })
@@ -1065,6 +1074,13 @@ impl<S: Server> Worker<S> {
             }
             self.save_data(&account.key());
             self.publish();
+            if !self.arrived.is_empty() {
+                self.shared
+                    .arrivals
+                    .lock()
+                    .expect("arrivals lock")
+                    .append(&mut self.arrived);
+            }
         }
         self.set_status(if failures.is_empty() {
             Status::Synced(Utc::now())
@@ -1132,7 +1148,7 @@ impl<S: Server> Worker<S> {
             let mut fresh: Vec<Arrival> = arrived
                 .iter()
                 .filter_map(|uid| data.inbox.messages.get(uid))
-                .filter(|message| !message.seen && message.reaction.is_none())
+                .filter(|message| !message.seen && message.reaction.as_deref() != Some(""))
                 .filter(|message| {
                     message
                         .from
@@ -1146,17 +1162,16 @@ impl<S: Server> Worker<S> {
                         .from
                         .as_ref()
                         .map_or("Someone".into(), |from| from.display().to_string()),
+                    address: message
+                        .from
+                        .as_ref()
+                        .map(|from| from.address.to_lowercase()),
                     subject: message.subject.clone(),
                     text: message.text.chars().take(200).collect(),
+                    kinds: message.kinds.clone(),
                 })
                 .collect();
-            if !fresh.is_empty() {
-                self.shared
-                    .arrivals
-                    .lock()
-                    .expect("arrivals lock")
-                    .append(&mut fresh);
-            }
+            self.arrived.append(&mut fresh);
             if let Some(sent) = data.sent.as_mut() {
                 connection.sync(&host, sent).await?;
             }
@@ -1439,7 +1454,7 @@ impl<S: Server> Worker<S> {
             let unread_change: i64 = match &change {
                 Change::Read(true) if was_unread => -1,
                 Change::Read(false) if !was_unread => 1,
-                Change::Flag(_) | Change::Read(_) | Change::Pin(_) => 0,
+                Change::Flag(_) | Change::Read(_) | Change::Pin(_) | Change::Alert(_) => 0,
                 _ if was_unread => -1,
                 _ => 0,
             };
@@ -1453,11 +1468,20 @@ impl<S: Server> Worker<S> {
             }
         }
         if let Change::Pin(on) = &change {
-            for key in keys {
+            for key in keys.clone() {
                 if *on {
                     data.pinned.insert(key);
                 } else {
                     data.pinned.remove(&key);
+                }
+            }
+        }
+        if let Change::Alert(alert) = &change {
+            for key in keys {
+                if *alert == Alert::Default {
+                    data.alerts.remove(&key);
+                } else {
+                    data.alerts.insert(key, *alert);
                 }
             }
         }

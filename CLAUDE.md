@@ -22,7 +22,8 @@ The store crate, `store/` (`zirbe-store`), is the mail engine behind
 saved with the account's cache, settled before every sync and applied to the
 synced view until then),
 `search.rs` (word-start matching that ignores case and accents), `invite.rs`
-(the text/calendar reader behind invitation cards),
+(the text/calendar reader behind invitation cards), `kinds.rs` (the kinds a message
+is, from its parts and headers, that notification rules match),
 `thread.rs` (the conversation rules, as connected components over the threading
 headers), `compose.rs` (reply
 recipients and the outgoing message), `secrets.rs` (keyring-core), `cache.rs`, and
@@ -39,7 +40,9 @@ another folder is fetched only while it is the one open, and stays cached
 after. Besides the two-minute timer, a task per account holds INBOX in IMAP
 IDLE in 25-second rounds and asks for that account's sync when the server
 reports a change or the message count moves; new unread mail from others found
-by a sync is queued for the window as arrivals. A sent message's raw text stays
+by a sync is queued for the window as arrivals, only after the snapshot
+holding those messages is published, so an arrival's conversation is always in
+the list the window reads. A sent message's raw text stays
 in the cache until its copy is seen in the Sent folder, and every sync retries
 saving it there. The app crate is the window: `app.rs` lays it out, `list.rs` draws the
 conversation rows, `filter.rs` the list's filter, `bubbles.rs` the messages and their attachment chips,

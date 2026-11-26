@@ -156,7 +156,7 @@ impl Filter {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use zirbe_store::Person;
+    use zirbe_store::{Alert, Person};
 
     fn message(from: &str, html: bool, list: bool) -> Message {
         Message {
@@ -186,6 +186,7 @@ mod tests {
             reaction: None,
             invite: None,
             waiting: false,
+            kinds: Vec::new(),
         }
     }
 
@@ -202,6 +203,7 @@ mod tests {
             in_inbox: true,
             flagged: false,
             pinned: false,
+            alert: Alert::Default,
             copies: Vec::new(),
         }
     }

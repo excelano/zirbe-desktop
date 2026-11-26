@@ -3,7 +3,7 @@
 
 use chrono::NaiveDate;
 use eframe::egui::{self, Align2, FontId, Key, Rect, Response, Sense, Ui, pos2, vec2};
-use zirbe_store::{Conversation, Person};
+use zirbe_store::{Alert, Conversation, Person};
 
 use crate::contacts::Faces;
 use crate::dates;
@@ -224,6 +224,7 @@ pub fn row(
     for (mark, color) in [
         (conversation.flagged, "⚑", palette.flag),
         (conversation.pinned, "📌", palette.secondary),
+        (conversation.alert == Alert::Mute, "🔕", palette.secondary),
     ]
     .into_iter()
     .filter(|(shown, _, _)| *shown)
