@@ -148,5 +148,10 @@ Favorites allows a sender on the Favorites list, and Nobody allows none.
 Every kind starts at Everyone, Favorites starts empty, and every conversation
 starts at Default, so out of the box every message notifies. When several
 messages arrive together and they are summarized as one notification, the
-count is of the messages that passed. The unread counts and the app's badge
-count every unread message.
+count is of the messages that passed.
+
+The unread counts inside the app count every unread message. The app's badge,
+on its icon or launcher entry, is a notification shown outside the app, so it
+counts the unread inbox messages the app holds that these rules let notify at
+the moment it is drawn. Muting a conversation or changing a rule changes the
+badge at once, and with new mail notifications off the badge is empty.
