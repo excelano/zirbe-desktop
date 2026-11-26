@@ -1,3 +1,9 @@
+zirbe (0.17.0) unstable; urgency=medium
+
+  * Choose which senders, conversations and kinds of message notify
+
+ -- David M. Anderson <david.anderson@excelano.com>  Wed, 25 Nov 2026 22:08:12 -0600
+
 zirbe (0.16.0) unstable; urgency=medium
 
   * Always show images from a sender or a whole domain you choose, and take it back in Settings
