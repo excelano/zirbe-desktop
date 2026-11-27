@@ -1,3 +1,9 @@
+zirbe (0.18.0) unstable; urgency=medium
+
+  * Count only the mail that would notify on the launcher badge
+
+ -- David M. Anderson <david.anderson@excelano.com>  Thu, 26 Nov 2026 21:34:19 -0600
+
 zirbe (0.17.0) unstable; urgency=medium
 
   * Choose which senders, conversations and kinds of message notify
