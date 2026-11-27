@@ -965,24 +965,27 @@ impl App {
         let arrivals: Vec<Arrival> = arrivals
             .into_iter()
             .filter(|arrival| {
-                self.settings
-                    .notifies(arrival, alert_for(&conversations, arrival))
+                self.settings.notifies(
+                    &arrival.kinds,
+                    arrival.address.as_deref(),
+                    alert_for(&conversations, arrival),
+                )
             })
             .collect();
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(false));
         if self.settings.notify && !focused && !arrivals.is_empty() {
             notifier.post(&arrivals);
         }
-        let unread: u32 = self
-            .source
-            .mail()
-            .accounts()
-            .iter()
-            .flat_map(|account| self.source.mail().folders(&account.key()))
-            .filter(|folder| folder.role == Some(Role::Inbox))
-            .map(|folder| folder.unread)
-            .sum();
-        notifier.badge(unread);
+        let badge = if self.settings.notify {
+            badged(
+                &self.source.mail().accounts(),
+                &conversations,
+                &self.settings,
+            )
+        } else {
+            0
+        };
+        notifier.badge(badge);
         let Some(target) = notifier.clicked() else {
             return;
         };
@@ -3567,6 +3570,37 @@ fn alert_menu(ui: &mut Ui, alert: Alert) -> Option<Change> {
     chosen
 }
 
+fn badged(accounts: &[Account], conversations: &[Conversation], settings: &Settings) -> u32 {
+    let mut count = 0;
+    for conversation in conversations {
+        let account = accounts
+            .iter()
+            .find(|account| account.key() == conversation.account);
+        let own = conversation
+            .messages
+            .iter()
+            .skip(usize::from(conversation.starts_with_context));
+        for message in own {
+            let address = message
+                .from
+                .as_ref()
+                .map(|from| from.address.to_lowercase());
+            let mine = address
+                .as_deref()
+                .is_some_and(|address| account.is_some_and(|account| account.owns(address)));
+            if message.mailbox == INBOX
+                && !message.seen
+                && message.reaction.as_deref() != Some("")
+                && !mine
+                && settings.notifies(&message.kinds, address.as_deref(), conversation.alert)
+            {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 fn alert_for(conversations: &[Conversation], arrival: &Arrival) -> Alert {
     arrival
         .message_id
@@ -3585,9 +3619,11 @@ fn alert_for(conversations: &[Conversation], arrival: &Arrival) -> Alert {
 
 #[cfg(test)]
 mod tests {
-    use zirbe_store::{Alert, Arrival, Conversation, Copy};
+    use chrono::Utc;
+    use zirbe_store::{Account, Alert, Arrival, Conversation, Copy, Kind, Message, Person};
 
-    use super::alert_for;
+    use super::{alert_for, badged};
+    use crate::settings::{Settings, Who};
 
     fn conversation(message_id: &str, alert: Alert) -> Conversation {
         Conversation {
@@ -3624,6 +3660,95 @@ mod tests {
             text: "Hi".into(),
             kinds: Vec::new(),
         }
+    }
+
+    fn unread(from: &str, kinds: &[Kind]) -> Message {
+        Message {
+            mailbox: "INBOX".into(),
+            uid: 1,
+            message_id: None,
+            in_reply_to: None,
+            references: Vec::new(),
+            from: Some(Person {
+                name: None,
+                address: from.into(),
+            }),
+            to: Vec::new(),
+            cc: Vec::new(),
+            subject: "Hello".into(),
+            date: Utc::now(),
+            text: String::new(),
+            quoted: false,
+            transcript: None,
+            attachments: Vec::new(),
+            seen: false,
+            partial: false,
+            html: false,
+            list: false,
+            mailing_list: None,
+            flagged: false,
+            reaction: None,
+            invite: None,
+            waiting: false,
+            kinds: kinds.to_vec(),
+        }
+    }
+
+    fn holding(messages: Vec<Message>, alert: Alert) -> Conversation {
+        let mut conversation = conversation("<a@x>", alert);
+        conversation.messages = messages;
+        conversation
+    }
+
+    fn me() -> Vec<Account> {
+        vec![Account {
+            address: "me@example.com".into(),
+            ..Account::default()
+        }]
+    }
+
+    #[test]
+    fn badge_counts_unread_inbox_mail_that_would_notify() {
+        let mut settings = Settings::default();
+        settings.set_who(Kind::Newsletters, Who::Nobody);
+        let mut seen = unread("a@x.example", &[Kind::PlainText]);
+        seen.seen = true;
+        let mut archived = unread("a@x.example", &[Kind::PlainText]);
+        archived.mailbox = "Archive".into();
+        let mut withdrawn = unread("a@x.example", &[Kind::Reactions]);
+        withdrawn.reaction = Some(String::new());
+        let conversations = [
+            holding(
+                vec![
+                    unread("a@x.example", &[Kind::PlainText]),
+                    unread("list@x.example", &[Kind::Newsletters]),
+                    unread("me@example.com", &[Kind::PlainText]),
+                    seen,
+                    archived,
+                    withdrawn,
+                ],
+                Alert::Default,
+            ),
+            holding(vec![unread("b@x.example", &[Kind::PlainText])], Alert::Mute),
+            holding(
+                vec![unread("c@x.example", &[Kind::Newsletters])],
+                Alert::Always,
+            ),
+        ];
+        assert_eq!(badged(&me(), &conversations, &settings), 2);
+    }
+
+    #[test]
+    fn badge_skips_the_context_message_another_conversation_holds() {
+        let mut conversation = holding(
+            vec![
+                unread("a@x.example", &[Kind::PlainText]),
+                unread("b@x.example", &[Kind::PlainText]),
+            ],
+            Alert::Default,
+        );
+        conversation.starts_with_context = true;
+        assert_eq!(badged(&me(), &[conversation], &Settings::default()), 1);
     }
 
     #[test]

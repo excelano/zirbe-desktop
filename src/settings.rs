@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use zirbe_store::{Alert, Arrival, Kind};
+use zirbe_store::{Alert, Kind};
 
 use crate::paths;
 
@@ -93,16 +93,13 @@ impl Settings {
         }
     }
 
-    pub fn notifies(&self, arrival: &Arrival, alert: Alert) -> bool {
+    pub fn notifies(&self, kinds: &[Kind], address: Option<&str>, alert: Alert) -> bool {
         match alert {
             Alert::Mute => false,
             Alert::Always => true,
-            Alert::Default => arrival.kinds.iter().any(|&kind| match self.who(kind) {
+            Alert::Default => kinds.iter().any(|&kind| match self.who(kind) {
                 Who::Everyone => true,
-                Who::Favorites => arrival
-                    .address
-                    .as_deref()
-                    .is_some_and(|address| self.is_favorite(address)),
+                Who::Favorites => address.is_some_and(|address| self.is_favorite(address)),
                 Who::Nobody => false,
             }),
         }
@@ -170,21 +167,9 @@ fn add(entries: &mut Vec<String>, entry: &str) {
 
 #[cfg(test)]
 mod tests {
-    use zirbe_store::{Alert, Arrival, Kind};
+    use zirbe_store::{Alert, Kind};
 
     use super::{Settings, Who};
-
-    fn arrival(address: Option<&str>, kinds: &[Kind]) -> Arrival {
-        Arrival {
-            account: "me@example.com".into(),
-            message_id: None,
-            sender: "Sender".into(),
-            address: address.map(str::to_string),
-            subject: "Hello".into(),
-            text: "Hi".into(),
-            kinds: kinds.to_vec(),
-        }
-    }
 
     #[test]
     fn trusts_a_sender_or_a_domain_and_its_subdomains() {
@@ -203,7 +188,7 @@ mod tests {
     fn defaults_notify_for_everything() {
         let settings = Settings::default();
         for kind in Kind::ALL {
-            assert!(settings.notifies(&arrival(None, &[kind]), Alert::Default));
+            assert!(settings.notifies(&[kind], None, Alert::Default));
         }
     }
 
@@ -218,21 +203,17 @@ mod tests {
             .insert(Kind::FormattedText, Who::Favorites);
         settings.favor("family.example");
         let text = [Kind::PlainText];
-        assert!(settings.notifies(&arrival(Some("mom@family.example"), &text), Alert::Default));
-        assert!(!settings.notifies(&arrival(Some("boss@work.example"), &text), Alert::Default));
+        assert!(settings.notifies(&text, Some("mom@family.example"), Alert::Default));
+        assert!(!settings.notifies(&text, Some("boss@work.example"), Alert::Default));
         let with_audio = [Kind::PlainText, Kind::Audio];
-        assert!(settings.notifies(
-            &arrival(Some("boss@work.example"), &with_audio),
-            Alert::Default
-        ));
+        assert!(settings.notifies(&with_audio, Some("boss@work.example"), Alert::Default));
     }
 
     #[test]
     fn mute_beats_a_favorite() {
         let mut settings = Settings::default();
         settings.favor("mom@family.example");
-        let arrival = arrival(Some("mom@family.example"), &[Kind::PlainText]);
-        assert!(!settings.notifies(&arrival, Alert::Mute));
+        assert!(!settings.notifies(&[Kind::PlainText], Some("mom@family.example"), Alert::Mute));
     }
 
     #[test]
@@ -241,9 +222,8 @@ mod tests {
         for kind in Kind::ALL {
             settings.notify_kinds.insert(kind, Who::Nobody);
         }
-        let arrival = arrival(None, &[Kind::PlainText]);
-        assert!(!settings.notifies(&arrival, Alert::Default));
-        assert!(settings.notifies(&arrival, Alert::Always));
+        assert!(!settings.notifies(&[Kind::PlainText], None, Alert::Default));
+        assert!(settings.notifies(&[Kind::PlainText], None, Alert::Always));
     }
 
     #[test]
@@ -253,7 +233,7 @@ mod tests {
             .notify_kinds
             .insert(Kind::PlainText, Who::Favorites);
         settings.favor("family.example");
-        assert!(!settings.notifies(&arrival(None, &[Kind::PlainText]), Alert::Default));
+        assert!(!settings.notifies(&[Kind::PlainText], None, Alert::Default));
     }
 
     #[test]
